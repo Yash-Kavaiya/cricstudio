@@ -59,17 +59,23 @@ async function main() {
   await app.listen({ port: config.port, host: config.host });
   app.log.info(`CricStudio server on :${config.port} · media=${config.mediaMode} · bus=${config.redisUrl ? 'redis' : 'memory'} · db=${config.databaseUrl ? 'postgres' : config.redisUrl ? 'redis' : 'sqlite'}`);
 
-  // 24/7: resume every studio that was live when the process stopped (deploys, crashes, reboots)
-  setTimeout(async () => {
+  // 24/7: resume every studio that should be live (deploys, crashes, reboots, instance scale-down).
+  // Runs at boot and then every 30 s; the Redis live lease makes sure exactly one instance wins,
+  // so when the streaming instance dies another one takes over once its lease expires.
+  const resumed = new Map<string, string>();
+  const resumeLive = async () => {
     for (const id of await repo.listLiveStudios().catch(() => [])) {
       const room = await studios.load(id);
       if (!room || room.isLive || !room.state.wantLive) continue;
-      const broadcaster = room.state.autopilot.cloud ? 'cloud' : 'host';
-      if (broadcaster === 'host') continue; // a human producer must come back and press Go live
+      if (!room.state.autopilot.cloud) continue; // a human producer must come back and press Go live
       const res = await room.startLive('cloud');
-      app.log.info(`[resume] studio ${id} → ${res.ok ? 'live (cloud producer)' : res.error}`);
+      const msg = res.ok ? 'live (cloud producer)' : (res.error ?? 'failed');
+      if (resumed.get(id) !== msg) app.log.info(`[resume] studio ${id} → ${msg}`); // log changes only
+      resumed.set(id, msg);
     }
-  }, 3000);
+  };
+  setTimeout(() => void resumeLive(), 3000);
+  setInterval(() => void resumeLive().catch(() => undefined), 30_000).unref();
 
   const shutdown = async () => {
     // release live studios first so another instance can resume them within seconds
