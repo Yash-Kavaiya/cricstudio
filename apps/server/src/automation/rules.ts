@@ -49,6 +49,9 @@ export class AutomationEngine {
   private lastSceneChange = Date.now();
   private rotationIdx = 0;
   private playlist: SceneId[] = [];
+  private scoreQueue: SceneId[] = [];
+  private scorePicks = 0;
+  private totalPicks = 0;
   private musicIdx = 0;
   private lastMusicChange = 0;
   private timer: NodeJS.Timeout;
@@ -189,17 +192,38 @@ export class AutomationEngine {
     });
   }
 
+  /**
+   * Weighted rotation: Score scenes (live score, ball-by-ball, batting, bowling) get `scoreShare`
+   * of the cuts (default 70%), everything else shares the rest. The split is kept exact over time
+   * (deficit counting, not dice rolls); each pool is shuffled and cycled so nothing repeats back-to-back.
+   */
   private nextAutopilotScene(st: StudioState): SceneId | null {
-    if (!this.playlist.length) {
-      this.playlist = this.autopilotPlaylist(st).sort(() => Math.random() - 0.5);
-      // cameras get extra airtime when people are on stage
-      if (st.autopilot.includeCameras) {
-        const cams = this.playlist.filter((s) => SCENES.find((x) => x.id === s)?.usesCameras);
-        for (let i = cams.length; i > 0; i--) this.playlist.splice(Math.floor(Math.random() * this.playlist.length), 0, cams[i - 1]);
-      }
+    const pool = this.autopilotPlaylist(st);
+    if (!pool.length) return null;
+    const isScore = (id: SceneId) => SCENES.find((x) => x.id === id)?.group === 'Score';
+    const score = pool.filter(isScore);
+    const other = pool.filter((id) => !isScore(id));
+    // cameras get extra airtime inside the "other" share when people are on stage
+    if (st.autopilot.includeCameras) other.push(...other.filter((s) => SCENES.find((x) => x.id === s)?.usesCameras));
+    const share = Math.max(0, Math.min(1, st.autopilot.scoreShare ?? 0.7));
+    const pickScore = !!score.length && (!other.length || this.scorePicks < share * (this.totalPicks + 1));
+    const next = this.take(pickScore ? this.scoreQueue : this.playlist, pickScore ? score : other, st.scene);
+    this.totalPicks++;
+    if (pickScore) this.scorePicks++;
+    return next;
+  }
+
+  /** shift the next scene off a shuffled queue (refilled from `src`), skipping the scene already on air */
+  private take(queue: SceneId[], src: SceneId[], current: SceneId): SceneId {
+    for (let i = queue.length - 1; i >= 0; i--) if (!src.includes(queue[i])) queue.splice(i, 1);
+    if (!queue.length) queue.push(...[...src].sort(() => Math.random() - 0.5));
+    let next = queue.shift()!;
+    if (next === current && src.some((s) => s !== current)) {
+      if (!queue.length) queue.push(...[...src].sort(() => Math.random() - 0.5));
+      const alt = queue.findIndex((s) => s !== current);
+      queue.push(next);
+      next = alt >= 0 ? queue.splice(alt, 1)[0] : next;
     }
-    let next = this.playlist.shift() ?? null;
-    if (next === st.scene) next = this.playlist.shift() ?? next;
     return next;
   }
 
@@ -307,5 +331,6 @@ export class AutomationEngine {
   /** reset the autopilot playlist (e.g. participants or match changed) */
   refreshPlaylist() {
     this.playlist = [];
+    this.scoreQueue = [];
   }
 }

@@ -48,6 +48,26 @@ export function AutopilotPanel({ client, onGoCloud, hasDestinations }: { client:
         </Typography>
       </Box>
 
+      <Box>
+        <Typography variant="subtitle2">Score focus · {Math.round((ap.scoreShare ?? 0.7) * 100)}% score / {100 - Math.round((ap.scoreShare ?? 0.7) * 100)}% other</Typography>
+        <Slider
+          size="small"
+          min={0}
+          max={100}
+          step={5}
+          marks={[
+            { value: 50, label: '50%' },
+            { value: 70, label: '70%' },
+            { value: 90, label: '90%' },
+          ]}
+          defaultValue={Math.round((ap.scoreShare ?? 0.7) * 100)}
+          onChangeCommitted={(_, v) => patch({ scoreShare: (v as number) / 100 })}
+        />
+        <Typography variant="caption" color="text.secondary">
+          Share of cuts that go to Live Score, Ball by Ball, Batting Scorecard and Bowling Figures. The rest rotate through stats, insights, analysis and cameras.
+        </Typography>
+      </Box>
+
       <FormControlLabel
         control={<Switch checked={ap.includeCameras} onChange={(e) => patch({ includeCameras: e.target.checked })} />}
         label={

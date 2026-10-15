@@ -285,6 +285,17 @@ export class VideoProcessor {
   }
 
   /** camera frame with colour correction applied */
+  private resize(w: number, h: number) {
+    for (const c of [this.out, this.person, this.graded]) {
+      c.width = w;
+      c.height = h;
+    }
+    if (this.keyer) {
+      this.keyer.canvas.width = w;
+      this.keyer.canvas.height = h;
+    }
+  }
+
   private gradedFrame(): CanvasImageSource {
     const fx = this.fx;
     if (!adjusted(fx)) return this.video;
@@ -297,8 +308,13 @@ export class VideoProcessor {
 
   private drawBackground(w: number, h: number) {
     const bg = virtualBackground(this.fx.bg);
-    if (bg) this.ctx.drawImage(bg, 0, 0, w, h);
-    else {
+    if (bg) {
+      // cover-fit so a 16:9 background never stretches onto a 4:3 / portrait camera
+      const bw = bg.width,
+        bh = bg.height,
+        k = Math.max(w / bw, h / bh);
+      this.ctx.drawImage(bg, (w - bw * k) / 2, (h - bh * k) / 2, bw * k, bh * k);
+    } else {
       this.ctx.fillStyle = '#0b1020';
       this.ctx.fillRect(0, 0, w, h);
     }
@@ -330,6 +346,8 @@ export class VideoProcessor {
   private frame() {
     const v = this.video;
     if (this.stopped || v.readyState < 2 || !v.videoWidth) return;
+    // follow the camera's real frame size (4:3 webcams, rotated phones, resolution changes)
+    if (v.videoWidth !== this.out.width || v.videoHeight !== this.out.height) this.resize(v.videoWidth, v.videoHeight);
     const { width: w, height: h } = this.out;
     const ctx = this.ctx;
     const fx = this.fx;

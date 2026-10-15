@@ -2,7 +2,8 @@ import { createWriteStream, existsSync } from 'node:fs';
 import { extname, resolve } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
-import { PLATFORM_PRESETS, type DestinationPublic, type Platform, type StudioCreateResponse } from '@cricstudio/shared';
+import { PLATFORM_PRESETS, type DestinationPublic, type Platform, type StudioCreateResponse, type SttProvider } from '@cricstudio/shared';
+import { CLOUD_STT, type CloudStt } from './stt/providers';
 import { config } from './config';
 import { DEMO_KEY } from './espn/demo';
 import type { MatchHub } from './espn/hub';
@@ -165,6 +166,27 @@ export function registerHttp(app: FastifyInstance, hub: MatchHub, repo: Repo, st
     await hostGuard(req);
     await repo.deleteDestination(req.params.did, req.params.id);
     return { ok: true };
+  });
+
+  /* ---------------- speech-to-text settings (live captions) ---------------- */
+
+  // Keys are write-only: saved encrypted on the server, the browser only learns whether one is set.
+  app.put<{ Params: { id: string }; Body: { provider?: SttProvider; language?: string; geminiModel?: string; keys?: Partial<Record<CloudStt, string | null>> } }>(
+    '/api/studios/:id/stt',
+    async (req, reply) => {
+      await hostGuard(req);
+      const room = await studios.load(req.params.id);
+      if (!room) return reply.code(404).send({ error: 'Studio not found' });
+      return { stt: room.setStt(req.body ?? {}) };
+    },
+  );
+
+  app.post<{ Params: { id: string }; Body: { provider: CloudStt; key?: string } }>('/api/studios/:id/stt/test', async (req, reply) => {
+    await hostGuard(req);
+    const room = await studios.load(req.params.id);
+    if (!room) return reply.code(404).send({ error: 'Studio not found' });
+    if (!CLOUD_STT.includes(req.body?.provider)) return reply.code(400).send({ error: 'Unknown provider' });
+    return room.testStt(req.body.provider, req.body.key);
   });
 
   /* ---------------- music uploads ---------------- */

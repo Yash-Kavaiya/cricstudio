@@ -1,13 +1,13 @@
 import { useEffect, useState } from 'react';
 import { Alert, Box, Button, ButtonGroup, ButtonBase, Divider, FormControlLabel, MenuItem, Stack, Switch, TextField, Typography } from '@mui/material';
 import { BACKGROUNDS, TRANSITIONS } from '@cricstudio/shared';
-import { speechSupported } from '../../captions/speech';
+import { CaptionsSettings } from './CaptionsSettings';
 import type { StudioClient } from '../../lib/studioClient';
 import { Icon } from '../Icon';
 
 const ACCENTS = ['#1a73e8', '#ea4335', '#34a853', '#f9ab00', '#a142f4', '#12b5cb', '#e8710a', '#d01884'];
 
-export function BrandPanel({ client }: { client: StudioClient }) {
+export function BrandPanel({ client, hostToken }: { client: StudioClient; hostToken: string }) {
   const st = client.state!;
   const b = st.brand;
   const [title, setTitle] = useState(b.title);
@@ -80,11 +80,8 @@ export function BrandPanel({ client }: { client: StudioClient }) {
       <FormControlLabel control={<Switch checked={b.fx3d} onChange={(e) => patchBrand({ fx3d: e.target.checked })} />} label="3D celebrations (four, six, wicket, milestones)" />
       <TextField label="Fan poll question" value={b.pollQuestion} onChange={(e) => patchBrand({ pollQuestion: e.target.value })} />
       <FormControlLabel control={<Switch checked={b.showTicker} onChange={(e) => patchBrand({ showTicker: e.target.checked })} />} label="Bottom ticker (other live scores)" />
-      <FormControlLabel
-        control={<Switch checked={b.captions} onChange={(e) => patchBrand({ captions: e.target.checked })} disabled={!speechSupported()} />}
-        label="Live captions (speech-to-text, burned in)"
-      />
-      {!speechSupported() && <Alert severity="info">Live captions need Chrome or Edge.</Alert>}
+      <Divider />
+      <CaptionsSettings client={client} hostToken={hostToken} />
       <Divider />
       <Box>
         <Typography variant="subtitle2" sx={{ mb: 1 }}>

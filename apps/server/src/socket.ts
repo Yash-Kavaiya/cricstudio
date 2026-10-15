@@ -40,6 +40,7 @@ function sanitizeAutopilot(cur: AutopilotSettings, p: Partial<AutopilotSettings>
   return {
     enabled: typeof p.enabled === 'boolean' ? p.enabled : cur.enabled,
     sceneSeconds: p.sceneSeconds !== undefined ? clampNum(p.sceneSeconds, 3, 30, cur.sceneSeconds) : cur.sceneSeconds,
+    scoreShare: p.scoreShare !== undefined ? clampNum(p.scoreShare, 0, 1, cur.scoreShare ?? 0.7) : (cur.scoreShare ?? 0.7),
     includeCameras: typeof p.includeCameras === 'boolean' ? p.includeCameras : cur.includeCameras,
     commentator: typeof p.commentator === 'boolean' ? p.commentator : cur.commentator,
     voice: p.voice && VOICES.some((v) => v.id === p.voice) ? p.voice : cur.voice,
@@ -300,6 +301,27 @@ export function registerSocket(io: Server, studios: StudioManager, hub: MatchHub
       if (!final && now - lastCaption < 250) return;
       lastCaption = now;
       io.to(r.roomName).emit('captions:text', { from: data.name ?? '', text: String(text).slice(-200), final: !!final, ts: now });
+    });
+
+    // live captions via a cloud STT engine: the browser sends one spoken phrase (16 kHz mono WAV)
+    let sttBusy = false;
+    socket.on('stt:segment', async (audio: ArrayBuffer | Buffer, ack: Ack = noop) => {
+      const r = room();
+      const me = self();
+      if (!r || !me || !r.state.brand.captions || r.state.stt.provider === 'browser') return ack({ ok: false, error: 'Cloud captions off' });
+      const wav = Buffer.isBuffer(audio) ? audio : Buffer.from(audio ?? new ArrayBuffer(0));
+      if (wav.length < 1000 || wav.length > 2_000_000) return ack({ ok: false, error: 'Bad audio size' });
+      if (sttBusy) return ack({ ok: false, error: 'busy' });
+      sttBusy = true;
+      try {
+        const { text, provider } = await r.transcribe(wav);
+        if (text) io.to(r.roomName).emit('captions:text', { from: data.name ?? '', text: text.slice(-200), final: true, ts: Date.now() });
+        ack({ ok: true, text, provider });
+      } catch (e) {
+        ack({ ok: false, error: (e as Error).message });
+      } finally {
+        sttBusy = false;
+      }
     });
 
     socket.on('livekit:token', async (_: unknown, ack: Ack = noop) => {

@@ -214,7 +214,7 @@ function StudioRoom({ client: c, hostToken, programToken, onLeave }: { client: S
 
         {/* stage column: program + backstage are sized together so the 16:9 program uses all free space */}
         <Box sx={{ minWidth: 0, minHeight: { xs: 420, md: 0 }, containerType: 'size', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <Stack spacing={1.5} sx={{ width: 'min(100cqw, calc((100cqh - 236px) * 16 / 9))', minWidth: { xs: '100%', sm: 520 }, maxHeight: '100%' }}>
+        <Stack spacing={1.5} sx={{ width: 'min(100cqw, max(320px, calc((100cqh - 236px) * 16 / 9)))', maxHeight: '100%', overflowY: 'auto', '& > *': { flexShrink: 0 } }}>
           <Stack direction="row" alignItems="center" spacing={1} sx={{ px: 0.5 }}>
             <Chip size="small" color={live ? 'error' : 'default'} label={live ? 'ON AIR' : 'PREVIEW'} sx={{ fontWeight: 700, letterSpacing: 0.5 }} />
             <Typography variant="subtitle2" noWrap sx={{ flex: 1 }}>
@@ -286,7 +286,7 @@ function StudioRoom({ client: c, hostToken, programToken, onLeave }: { client: S
             {tab === 'auto' && <AutomationPanel client={client} />}
             {tab === 'audio' && <AudioPanel client={client} hostToken={hostToken} />}
             {tab === 'stream' && <DestinationsPanel client={client} hostToken={hostToken} dests={dests} />}
-            {tab === 'brand' && <BrandPanel client={client} />}
+            {tab === 'brand' && <BrandPanel client={client} hostToken={hostToken} />}
             {tab === 'chat' && <ChatPanel client={client} />}
           </Box>
         </Box>

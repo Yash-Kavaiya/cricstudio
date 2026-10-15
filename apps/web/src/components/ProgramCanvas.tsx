@@ -12,6 +12,7 @@ export function ProgramCanvas({ renderer, rounded = true, live = false }: { rend
     c.style.width = '100%';
     c.style.height = '100%';
     c.style.display = 'block';
+    c.style.objectFit = 'contain'; // never distort the 16:9 program, whatever box it lands in
     el.appendChild(c);
     return () => {
       if (c.parentElement === el) el.removeChild(c);

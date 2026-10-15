@@ -1,17 +1,18 @@
 import { existsSync } from 'node:fs';
 import type { Server } from 'socket.io';
-import type { ChatMessage, CommentaryLine, CricketEvent, MatchDetail, MatchListItem, Participant, StudioState, Suggestion } from '@cricstudio/shared';
+import type { ChatMessage, CommentaryLine, CricketEvent, MatchDetail, MatchListItem, Participant, StudioState, SttProvider, Suggestion } from '@cricstudio/shared';
 import { AutomationEngine } from '../automation/rules';
 import { Commentator } from '../commentary/commentator';
 import { config } from '../config';
 import { DEMO_KEY } from '../espn/demo';
 import type { MatchHub } from '../espn/hub';
-import { decrypt } from '../store/crypto';
+import { decrypt, encrypt } from '../store/crypto';
+import { CLOUD_STT, cricketHints, silentWav, transcribeWith, type CloudStt } from '../stt/providers';
 import type { Repo, StudioRecord } from '../store/repo';
 import { LivePipeline, type StreamTarget } from '../stream/pipeline';
 import { CloudProducer, findChrome } from '../worker/cloudProducer';
 
-const PERSISTED = ['scene', 'baseScene', 'automation', 'rules', 'music', 'brand', 'countdownTo', 'spotlightId', 'autopilot', 'wantLive'] as const;
+const PERSISTED = ['scene', 'baseScene', 'automation', 'rules', 'music', 'brand', 'countdownTo', 'spotlightId', 'autopilot', 'wantLive', 'stt'] as const;
 
 export function defaultState(rec: StudioRecord): StudioState {
   return {
@@ -55,6 +56,7 @@ export function defaultState(rec: StudioRecord): StudioState {
     autopilot: {
       enabled: false,
       sceneSeconds: 8,
+      scoreShare: 0.7,
       includeCameras: false,
       commentator: true,
       voice: config.ttsVoice,
@@ -63,6 +65,7 @@ export function defaultState(rec: StudioRecord): StudioState {
       autoMatch: false,
       cloud: false,
     },
+    stt: { provider: 'browser', language: 'en-IN', geminiModel: 'gemini-2.5-flash', configured: { gnani: false, google: false, gemini: false } },
     transition: 'fadeZoom',
     wantLive: false,
   };
@@ -94,6 +97,8 @@ export class StudioRoom {
   private autoMatchTimer: NodeJS.Timeout;
   private postSince = 0;
   latestMatch: MatchDetail | null = null;
+  /** encrypted speech-to-text API keys (never broadcast) */
+  private sttKeys: Partial<Record<CloudStt, string>> = {};
 
   constructor(
     readonly record: StudioRecord,
@@ -115,7 +120,12 @@ export class StudioRoom {
       brand: { ...base.brand, ...(saved.brand ?? {}) },
       music: { ...base.music, ...(saved.music ?? {}), playing: false },
       autopilot: { ...base.autopilot, ...(saved.autopilot ?? {}) },
+      stt: { ...base.stt, ...(saved.stt ?? {}) },
     };
+    // speech-to-text API keys: encrypted at rest, kept out of the broadcast state
+    const savedKeys = ((saved as { sttKeys?: Partial<Record<CloudStt, string>> }).sttKeys ?? {}) as Partial<Record<CloudStt, string>>;
+    for (const p of CLOUD_STT) if (typeof savedKeys[p] === 'string' && savedKeys[p]) this.sttKeys[p] = savedKeys[p];
+    this.state.stt.configured = { gnani: !!this.sttKeys.gnani, google: !!this.sttKeys.google, gemini: !!this.sttKeys.gemini };
     this.state.sceneUntil = null;
     if (this.state.scene !== this.state.baseScene) this.state.scene = this.state.baseScene;
     this.automation = new AutomationEngine({
@@ -338,8 +348,69 @@ export class StudioRoom {
     this.persistTimer = setTimeout(() => void this.persist(), 1500);
   }
 
+  /* ---------------- speech-to-text (live captions) ---------------- */
+
+  /** Update provider/language/model and save or clear API keys (null/'' clears). */
+  setStt(p: { provider?: SttProvider; language?: string; geminiModel?: string; keys?: Partial<Record<CloudStt, string | null>> }) {
+    const stt = { ...this.state.stt };
+    if (p.provider && (p.provider === 'browser' || CLOUD_STT.includes(p.provider))) stt.provider = p.provider;
+    if (typeof p.language === 'string' && /^[a-z]{2,3}(-[A-Za-z]{2,4})?$/.test(p.language)) stt.language = p.language;
+    if (typeof p.geminiModel === 'string' && /^[\w.\-/]{3,80}$/.test(p.geminiModel.trim())) stt.geminiModel = p.geminiModel.trim();
+    for (const k of CLOUD_STT) {
+      const v = p.keys?.[k];
+      if (v === undefined) continue;
+      if (v === null || !String(v).trim()) delete this.sttKeys[k];
+      else this.sttKeys[k] = encrypt(String(v).trim().slice(0, 400));
+    }
+    stt.configured = { gnani: !!this.sttKeys.gnani, google: !!this.sttKeys.google, gemini: !!this.sttKeys.gemini };
+    this.state.stt = stt;
+    this.commit();
+    void this.persist();
+    return stt;
+  }
+
+  private sttKey(p: CloudStt): string | null {
+    try {
+      return this.sttKeys[p] ? decrypt(this.sttKeys[p]!) : null;
+    } catch {
+      return null; // secret rotated
+    }
+  }
+
+  /** Chosen provider first, then any other provider with a key. Throws when every cloud engine fails. */
+  async transcribe(wav: Buffer): Promise<{ text: string; provider: CloudStt }> {
+    const stt = this.state.stt;
+    const order = [stt.provider, ...CLOUD_STT].filter((p, i, a): p is CloudStt => p !== 'browser' && a.indexOf(p) === i);
+    const hints = cricketHints(this.latestMatch);
+    let lastErr: Error | null = null;
+    for (const p of order) {
+      const key = this.sttKey(p);
+      if (!key) continue;
+      try {
+        return { text: await transcribeWith(p, { wav, language: stt.language, key, geminiModel: stt.geminiModel, hints }), provider: p };
+      } catch (e) {
+        lastErr = e as Error;
+        console.warn(`[stt] ${p} failed: ${lastErr.message}`);
+      }
+    }
+    throw lastErr ?? new Error('No speech-to-text API key saved');
+  }
+
+  /** Check a key (the saved one when `key` is omitted) with half a second of silence. */
+  async testStt(p: CloudStt, key?: string): Promise<{ ok: boolean; error?: string; ms: number }> {
+    const k = key?.trim() || this.sttKey(p);
+    const t0 = Date.now();
+    if (!k) return { ok: false, error: 'No API key saved', ms: 0 };
+    try {
+      await transcribeWith(p, { wav: silentWav(), language: this.state.stt.language, key: k, geminiModel: this.state.stt.geminiModel, hints: [] });
+      return { ok: true, ms: Date.now() - t0 };
+    } catch (e) {
+      return { ok: false, error: (e as Error).message, ms: Date.now() - t0 };
+    }
+  }
+
   async persist() {
-    const settings = JSON.stringify(Object.fromEntries(PERSISTED.map((k) => [k, this.state[k]])));
+    const settings = JSON.stringify({ ...Object.fromEntries(PERSISTED.map((k) => [k, this.state[k]])), sttKeys: this.sttKeys });
     await this.repo.updateStudio(this.state.id, { settings, name: this.state.name });
   }
 

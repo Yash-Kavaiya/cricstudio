@@ -325,6 +325,8 @@ export interface AutopilotSettings {
   /** run the show without a host: rotate scenes, music, AI commentary */
   enabled: boolean;
   sceneSeconds: number; // 3..30
+  /** share of airtime for the Score scenes (live score, ball-by-ball, batting, bowling); 0..1, default 0.7 */
+  scoreShare?: number;
   includeCameras: boolean;
   commentator: boolean;
   voice: string;
@@ -336,6 +338,35 @@ export interface AutopilotSettings {
   /** headless cloud worker renders + streams (no browser needed) */
   cloud: boolean;
 }
+
+/** Live-caption speech-to-text engine. `browser` = free Web Speech API (Chrome/Edge), used as fallback. */
+export type SttProvider = 'browser' | 'gnani' | 'google' | 'gemini';
+
+export interface SttSettings {
+  provider: SttProvider;
+  /** BCP-47 language, e.g. en-IN, hi-IN */
+  language: string;
+  /** Google AI Studio model id for the gemini provider */
+  geminiModel: string;
+  /** which API keys are saved on the server (keys themselves are never sent to browsers) */
+  configured: Record<Exclude<SttProvider, 'browser'>, boolean>;
+}
+
+export const STT_LANGUAGES: { code: string; label: string }[] = [
+  { code: 'en-IN', label: 'English (India) · Hinglish' },
+  { code: 'hi-IN', label: 'Hindi' },
+  { code: 'bn-IN', label: 'Bengali' },
+  { code: 'gu-IN', label: 'Gujarati' },
+  { code: 'kn-IN', label: 'Kannada' },
+  { code: 'ml-IN', label: 'Malayalam' },
+  { code: 'mr-IN', label: 'Marathi' },
+  { code: 'pa-IN', label: 'Punjabi' },
+  { code: 'ta-IN', label: 'Tamil' },
+  { code: 'te-IN', label: 'Telugu' },
+  { code: 'en-GB', label: 'English (UK)' },
+  { code: 'en-US', label: 'English (US)' },
+  { code: 'en-AU', label: 'English (Australia)' },
+];
 
 export interface CommentaryLine {
   id: string;
@@ -385,6 +416,8 @@ export interface StudioState {
   countdownTo: number | null;
   spotlightId: string | null;
   autopilot: AutopilotSettings;
+  /** live-caption speech-to-text engine */
+  stt: SttSettings;
   /** transition for the current cut, chosen by the server so every renderer matches */
   transition: TransitionId;
   /** non-null when live is desired (survives restarts for 24/7 resume) */

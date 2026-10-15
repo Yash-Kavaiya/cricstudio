@@ -16,7 +16,8 @@ import type {
   Suggestion,
 } from '@cricstudio/shared';
 import { AudioEngine } from '../audio/engine';
-import { LiveCaptions } from '../captions/speech';
+import { LiveCaptions, speechSupported } from '../captions/speech';
+import { SpeechSegmenter } from '../captions/segmenter';
 import { ProgramRecorder } from '../compositor/recorder';
 import { ProgramRenderer } from '../compositor/renderer';
 import { MeshRTC, type RemoteMedia } from '../rtc/mesh';
@@ -105,6 +106,14 @@ export class StudioClient {
   private speechBusy = false;
   commentary: CommentaryLine | null = null;
   private captions: LiveCaptions | null = null;
+  private segmenter: SpeechSegmenter | null = null;
+  private sttChain: Promise<void> = Promise.resolve();
+  private sttPending = 0;
+  private cloudFails = 0;
+  private cloudFallbackUntil = 0;
+  private captionRetry: ReturnType<typeof setTimeout> | null = null;
+  /** what is producing your captions right now (shown in the UI) */
+  captionStatus: { engine: 'off' | 'browser' | 'gnani' | 'google' | 'gemini'; fallback: boolean; error?: string; lastText?: string } = { engine: 'off', fallback: false };
   private remoteAudio = new Map<string, HTMLAudioElement>();
   private listeners = new Set<Listener>();
   private matchesTimer: number | null = null;
@@ -315,6 +324,8 @@ export class StudioClient {
       tracks.push(this.video.track);
     } else if (cam) tracks.push(cam);
     this.localStream = new MediaStream(tracks);
+    // the phrase detector listens to the processed mic — follow mic changes
+    if (this.segmenter) void this.segmenter.start(this.localStream);
   }
 
   private releaseMedia() {
@@ -333,6 +344,8 @@ export class StudioClient {
     this.recorder?.stop();
     this.speechQueue = [];
     this.captions?.stop();
+    this.segmenter?.stop();
+    if (this.captionRetry) clearTimeout(this.captionRetry);
     this.transport?.close();
     this.renderer.dispose();
     this.audio.close();
@@ -461,7 +474,8 @@ export class StudioClient {
     this.audio.applyMusic(st.music);
     this.audio.sfxVolume = st.brand.sfxVolume;
     this.syncVoices();
-    if (this.opts.role !== 'program' && (prev?.brand.captions ?? false) !== st.brand.captions) this.updateCaptions();
+    const sttSig = (x?: StudioState | null) => (x ? `${x.brand.captions}|${x.stt?.provider}|${JSON.stringify(x.stt?.configured)}|${x.stt?.language}` : '');
+    if (this.opts.role !== 'program' && sttSig(prev) !== sttSig(st)) this.updateCaptions();
     this.notify();
   }
 
@@ -581,17 +595,83 @@ export class StudioClient {
     this.notify();
   }
 
+  /**
+   * Live captions. Cloud engines (Gnani / Google Cloud / Google AI Studio) get phrases cut from the
+   * processed mic; when they're unavailable or failing we fall back to the browser's free
+   * Web Speech recognition (Chrome/Edge) and retry the cloud engine a minute later.
+   */
   private updateCaptions() {
-    const on = !!this.state?.brand.captions;
-    if (on && !this.captions) {
-      this.captions = new LiveCaptions((text, final) => {
-        if (!this.isMicMuted() && this.self?.onStage) this.socket.emit('captions:text', { text, final });
-      });
-      this.captions.start();
-    } else if (!on && this.captions) {
+    const st = this.state;
+    const on = !!st?.brand.captions && this.opts.role !== 'program';
+    const stt = st?.stt;
+    const cloudReady = !!stt && stt.provider !== 'browser' && Object.values(stt.configured ?? {}).some(Boolean);
+    const fallback = cloudReady && this.cloudFallbackUntil > Date.now();
+    const mode: 'off' | 'browser' | 'cloud' = !on ? 'off' : cloudReady && !fallback ? 'cloud' : 'browser';
+
+    if (mode !== 'browser' && this.captions) {
       this.captions.stop();
       this.captions = null;
     }
+    if (mode !== 'cloud' && this.segmenter) {
+      this.segmenter.stop();
+      this.segmenter = null;
+    }
+    if (mode === 'browser' && !this.captions && speechSupported()) {
+      this.captions = new LiveCaptions((text, final) => {
+        if (!this.isMicMuted() && this.self?.onStage) this.socket.emit('captions:text', { text, final });
+      }, stt?.language || undefined);
+      this.captions.start();
+    }
+    if (mode === 'cloud' && !this.segmenter) {
+      this.segmenter = new SpeechSegmenter((wav) => this.sendPhrase(wav));
+      if (this.localStream) void this.segmenter.start(this.localStream);
+    }
+    const prevErr = this.captionStatus.error;
+    this.captionStatus =
+      mode === 'off'
+        ? { engine: 'off', fallback: false }
+        : mode === 'cloud'
+          ? { engine: stt!.provider as 'gnani' | 'google' | 'gemini', fallback: false, lastText: this.captionStatus.lastText }
+          : { engine: 'browser', fallback, error: fallback ? prevErr : speechSupported() ? undefined : 'This browser has no built-in speech recognition — use Chrome/Edge or add a cloud API key.' };
+    this.notify();
+  }
+
+  private sendPhrase(wav: ArrayBuffer) {
+    if (this.isMicMuted() || !this.self?.onStage) return;
+    if (this.sttPending >= 3) return; // provider is slower than speech — drop rather than lag behind
+    this.sttPending++;
+    this.sttChain = this.sttChain.then(async () => {
+      try {
+        const r = await this.socket.timeout(20_000).emitWithAck('stt:segment', wav);
+        if (r?.ok) {
+          this.cloudFails = 0;
+          this.captionStatus = { engine: r.provider ?? this.captionStatus.engine, fallback: false, lastText: r.text || this.captionStatus.lastText };
+          this.notify();
+        } else if (r?.error !== 'busy') this.cloudFailed(r?.error ?? 'Speech-to-text failed');
+      } catch {
+        this.cloudFailed('Speech-to-text timed out');
+      } finally {
+        this.sttPending--;
+      }
+    });
+  }
+
+  private cloudFailed(error: string) {
+    this.captionStatus = { ...this.captionStatus, error };
+    // a rejected key won't fix itself — switch to browser speech right away; otherwise allow one blip
+    const fatal = /API key rejected|No speech-to-text API key/i.test(error);
+    if (!fatal && ++this.cloudFails < 2) return this.notify();
+    // two failures in a row → browser captions for a minute, then try the cloud engine again
+    this.cloudFails = 0;
+    this.cloudFallbackUntil = Date.now() + 60_000;
+    this.updateCaptions();
+    if (this.captionRetry) clearTimeout(this.captionRetry);
+    this.captionRetry = setTimeout(() => this.updateCaptions(), 61_000);
+  }
+
+  /** live level of the caption phrase detector (0..1) for the settings meter */
+  captionLevel() {
+    return this.segmenter?.level ?? 0;
   }
 
   /* ---------------- host actions ---------------- */
