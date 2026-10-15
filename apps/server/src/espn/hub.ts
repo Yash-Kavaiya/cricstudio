@@ -49,6 +49,8 @@ export class MatchHub {
     const now = Date.now();
     const demo = (this.pollers.get(DEMO_KEY)?.demo ?? this.demoPreview).listItem();
     if (this.scorepanelCache && now - this.scorepanelCache.at < config.scorepanelTtlMs) return [demo, ...this.scorepanelCache.data];
+    // stale-while-revalidate: answer instantly from the last snapshot and refresh in the background
+    const stale = this.scorepanelCache;
     if (!this.scorepanelInflight) {
       this.scorepanelInflight = this.client
         .scorepanel()
@@ -65,6 +67,7 @@ export class MatchHub {
           this.scorepanelInflight = null;
         });
     }
+    if (stale) return [demo, ...stale.data];
     return [demo, ...(await this.scorepanelInflight)];
   }
 
