@@ -1,3 +1,4 @@
+import { stripBrokenLogos } from './logos';
 import { BallStore, EspnClient, EventDetector, buildMatchDetail, normalizeScorepanel } from '@cricstudio/cricket-engine';
 import type { CricketEvent, MatchDetail, MatchListItem } from '@cricstudio/shared';
 import type { Bus } from '../bus';
@@ -51,8 +52,8 @@ export class MatchHub {
     if (!this.scorepanelInflight) {
       this.scorepanelInflight = this.client
         .scorepanel()
-        .then((raw) => {
-          const data = normalizeScorepanel(raw);
+        .then(async (raw) => {
+          const data = await stripBrokenLogos(normalizeScorepanel(raw));
           this.scorepanelCache = { at: Date.now(), data };
           return data;
         })
@@ -84,7 +85,7 @@ export class MatchHub {
     const { leagueId, eventId } = parseMatchKey(key);
     const store = new BallStore(this.client, leagueId, eventId, 6);
     const [summary, balls] = await Promise.all([this.client.summary(leagueId, eventId), store.sync().catch(() => [])]);
-    return buildMatchDetail({ leagueId, eventId, summary, balls });
+    return (await stripBrokenLogos([buildMatchDetail({ leagueId, eventId, summary, balls })]))[0];
   }
 
   subscribe(key: string, listener: Listener): () => void {
@@ -157,7 +158,7 @@ export class MatchHub {
         if (await this.bus.tryLock(`lock:match:${p.key}`, lockTtl)) {
           const { leagueId, eventId } = parseMatchKey(p.key);
           const [summary, balls] = await Promise.all([this.client.summary(leagueId, eventId), p.store!.sync()]);
-          const detail = buildMatchDetail({ leagueId, eventId, summary, balls });
+          const [detail] = await stripBrokenLogos([buildMatchDetail({ leagueId, eventId, summary, balls })]);
           const events = p.detector.process(balls, detail.state);
           await this.bus.publish(`match:${p.key}`, { detail, events } satisfies MatchUpdate);
           next = detail.state === 'in' ? config.pollLiveMs : config.pollIdleMs;
