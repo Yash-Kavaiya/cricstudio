@@ -50,6 +50,8 @@ export class AutomationEngine {
   private rotationIdx = 0;
   private playlist: SceneId[] = [];
   private scoreQueue: SceneId[] = [];
+  private camQueue: SceneId[] = [];
+  private otherPicks = 0;
   private scorePicks = 0;
   private totalPicks = 0;
   private musicIdx = 0;
@@ -203,14 +205,19 @@ export class AutomationEngine {
     const isScore = (id: SceneId) => SCENES.find((x) => x.id === id)?.group === 'Score';
     const score = pool.filter(isScore);
     const other = pool.filter((id) => !isScore(id));
-    // cameras get extra airtime inside the "other" share when people are on stage
-    if (st.autopilot.includeCameras) other.push(...other.filter((s) => SCENES.find((x) => x.id === s)?.usesCameras));
+    const isCam = (id: SceneId) => !!SCENES.find((x) => x.id === id)?.usesCameras;
+    const cams = other.filter(isCam);
+    const rest = other.filter((id) => !isCam(id));
     const share = Math.max(0, Math.min(1, st.autopilot.scoreShare ?? 0.7));
     const pickScore = !!score.length && (!other.length || this.scorePicks < share * (this.totalPicks + 1));
-    const next = this.take(pickScore ? this.scoreQueue : this.playlist, pickScore ? score : other, st.scene);
     this.totalPicks++;
-    if (pickScore) this.scorePicks++;
-    return next;
+    if (pickScore) {
+      this.scorePicks++;
+      return this.take(this.scoreQueue, score, st.scene);
+    }
+    // people on stage: alternate camera shots with stats/insights inside the "other" share
+    const camTurn = cams.length > 0 && (!rest.length || this.otherPicks++ % 2 === 0);
+    return camTurn ? this.take(this.camQueue, cams, st.scene) : this.take(this.playlist, rest, st.scene);
   }
 
   /** shift the next scene off a shuffled queue (refilled from `src`), skipping the scene already on air */
@@ -332,5 +339,6 @@ export class AutomationEngine {
   refreshPlaylist() {
     this.playlist = [];
     this.scoreQueue = [];
+    this.camQueue = [];
   }
 }
