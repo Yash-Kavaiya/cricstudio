@@ -1,0 +1,12 @@
+port: 7880
+rtc:
+  tcp_port: 7881
+  port_range_start: 50000
+  port_range_end: 50100
+  use_external_ip: true
+redis:
+  address: redis:6379
+keys:
+  devkey: devsecret_change_me_to_32_chars_min
+room:
+  max_participants: 8 # 1 host + 4 guests + program/egress headroom

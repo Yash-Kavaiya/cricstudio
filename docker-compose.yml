@@ -1,0 +1,69 @@
+# Production-style stack:
+#   app        CricStudio (API + Socket.IO + web UI + FFmpeg multistream) — scale horizontally
+#   redis      shared ESPN poll lock, pub/sub fan-out and Socket.IO adapter
+#   postgres   studios + encrypted stream keys
+#   livekit    WebRTC SFU (MEDIA_MODE=livekit)
+#   egress     LiveKit Web Egress: renders /program/:id in headless Chrome → RTMP to all platforms
+#
+#   docker compose up -d                 # mesh mode (browser compositor + FFmpeg)
+#   MEDIA_MODE=livekit docker compose --profile livekit up -d
+
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379
+      DATABASE_URL: postgres://cric:cric@postgres:5432/cricstudio
+      MEDIA_MODE: ${MEDIA_MODE:-mesh}
+      LIVEKIT_URL: ${LIVEKIT_URL:-ws://localhost:7880}
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-devkey}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-devsecret_change_me_to_32_chars_min}
+    ports: ["8787:8787"]
+    volumes: ["appdata:/data"]
+    depends_on: [redis, postgres]
+    # headless Chromium (24/7 cloud producer) needs shared memory; cap memory so leaks can't take the host down
+    shm_size: "1gb"
+    deploy:
+      resources:
+        limits: { cpus: "4", memory: 4g }
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "5" }
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: cric
+      POSTGRES_PASSWORD: cric
+      POSTGRES_DB: cricstudio
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+
+  livekit:
+    image: livekit/livekit-server:v1.8
+    profiles: ["livekit"]
+    restart: unless-stopped
+    command: --config /etc/livekit.yaml
+    volumes: ["./deploy/livekit.yaml:/etc/livekit.yaml:ro"]
+    ports: ["7880:7880", "7881:7881", "50000-50100:50000-50100/udp"]
+    depends_on: [redis]
+
+  egress:
+    image: livekit/egress:v1.9
+    profiles: ["livekit"]
+    restart: unless-stopped
+    environment:
+      EGRESS_CONFIG_FILE: /etc/egress.yaml
+    volumes: ["./deploy/egress.yaml:/etc/egress.yaml:ro"]
+    cap_add: ["SYS_ADMIN"]
+    depends_on: [livekit, redis]
+
+volumes:
+  appdata:
+  pgdata:

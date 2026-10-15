@@ -1,0 +1,19 @@
+{
+  "name": "cricstudio",
+  "version": "1.0.0",
+  "private": true,
+  "description": "StreamYard-style multistream live studio built only for cricket",
+  "workspaces": ["packages/*", "apps/*"],
+  "scripts": {
+    "dev": "concurrently -k -n server,web -c blue,green \"npm:dev -w @cricstudio/server\" \"npm:dev -w @cricstudio/web\"",
+    "build": "npm run typecheck && npm run build -w @cricstudio/web && npm run build -w @cricstudio/server",
+    "start": "npm run start -w @cricstudio/server",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "typescript": "^5.7.3"
+  },
+  "engines": { "node": ">=22.13" }
+}

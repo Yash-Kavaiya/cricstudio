@@ -1,0 +1,396 @@
+import { existsSync } from 'node:fs';
+import type { Server } from 'socket.io';
+import type { ChatMessage, CommentaryLine, CricketEvent, MatchDetail, MatchListItem, Participant, StudioState, Suggestion } from '@cricstudio/shared';
+import { AutomationEngine } from '../automation/rules';
+import { Commentator } from '../commentary/commentator';
+import { config } from '../config';
+import { DEMO_KEY } from '../espn/demo';
+import type { MatchHub } from '../espn/hub';
+import { decrypt } from '../store/crypto';
+import type { Repo, StudioRecord } from '../store/repo';
+import { LivePipeline, type StreamTarget } from '../stream/pipeline';
+import { CloudProducer, findChrome } from '../worker/cloudProducer';
+
+const PERSISTED = ['scene', 'baseScene', 'automation', 'rules', 'music', 'brand', 'countdownTo', 'spotlightId', 'autopilot', 'wantLive'] as const;
+
+export function defaultState(rec: StudioRecord): StudioState {
+  return {
+    id: rec.id,
+    name: rec.name,
+    matchKey: rec.matchKey,
+    participants: [],
+    scene: 'startingSoon',
+    baseScene: 'startingSoon',
+    sceneUntil: null,
+    overlay: null,
+    automation: 'auto',
+    rules: {
+      wicket: true,
+      boundary: true,
+      overEnd: true,
+      milestones: true,
+      inningsBreak: true,
+      idleRotation: true,
+      idleSeconds: 75,
+    },
+    pinnedUntil: 0,
+    live: { state: 'idle', mode: 'mesh', destinations: [] },
+    music: { track: 'stadium-anthem', playing: false, volume: 0.35, duck: true, ambience: { on: false, volume: 0.3, mood: 'buzzing' } },
+    brand: {
+      title: rec.name,
+      ticker: 'Welcome to the live cricket show! Drop your predictions in the chat 🏏',
+      accent: '#1a73e8',
+      showScorebug: true,
+      showTicker: true,
+      captions: false,
+      sfx: true,
+      sfxVolume: 0.8,
+      background: 'stadiumNight',
+      transition: 'mixed',
+      fx3d: true,
+      pollQuestion: 'Who wins this match? Vote in the comments!',
+    },
+    countdownTo: null,
+    spotlightId: null,
+    autopilot: {
+      enabled: false,
+      sceneSeconds: 8,
+      includeCameras: false,
+      commentator: true,
+      voice: config.ttsVoice,
+      chatterSeconds: 35,
+      autoMusic: true,
+      autoMatch: false,
+      cloud: false,
+    },
+    transition: 'fadeZoom',
+    wantLive: false,
+  };
+}
+
+/** prefer international cricket, then major T20 leagues, then everything else */
+function matchRank(m: MatchListItem): number {
+  const t = `${m.leagueName} ${m.description}`.toLowerCase();
+  let r = m.state === 'in' ? 1000 : m.state === 'pre' ? 0 : -1000;
+  if (/world cup|champions trophy|asia cup|tour of|test|odi|t20i/.test(t)) r += 300;
+  if (/premier league|ipl|big bash|psl|caribbean|sa20|hundred|major league|ilt20|wpl/.test(t)) r += 200;
+  if (/women/.test(t)) r += 20;
+  if (m.teams.some((x) => x.score)) r += 10;
+  return r;
+}
+
+export class StudioRoom {
+  state: StudioState;
+  automation: AutomationEngine;
+  commentator: Commentator;
+  chat: ChatMessage[] = [];
+  pipeline: LivePipeline | null = null;
+  cloud: CloudProducer | null = null;
+  producerId: string | null = null; // cloud producer socket
+  hostLeftTimer: NodeJS.Timeout | null = null;
+  private unsubMatch: (() => void) | null = null;
+  private emitQueued = false;
+  private persistTimer: NodeJS.Timeout | null = null;
+  private autoMatchTimer: NodeJS.Timeout;
+  private postSince = 0;
+  latestMatch: MatchDetail | null = null;
+
+  constructor(
+    readonly record: StudioRecord,
+    private readonly io: Server,
+    private readonly hub: MatchHub,
+    private readonly repo: Repo,
+  ) {
+    const base = defaultState(record);
+    let saved: Partial<StudioState> = {};
+    try {
+      saved = JSON.parse(record.settings || '{}');
+    } catch {
+      /* ignore */
+    }
+    this.state = {
+      ...base,
+      ...Object.fromEntries(PERSISTED.filter((k) => saved[k] !== undefined).map((k) => [k, saved[k]])),
+      rules: { ...base.rules, ...(saved.rules ?? {}) },
+      brand: { ...base.brand, ...(saved.brand ?? {}) },
+      music: { ...base.music, ...(saved.music ?? {}), playing: false },
+      autopilot: { ...base.autopilot, ...(saved.autopilot ?? {}) },
+    };
+    this.state.sceneUntil = null;
+    if (this.state.scene !== this.state.baseScene) this.state.scene = this.state.baseScene;
+    this.automation = new AutomationEngine({
+      state: () => this.state,
+      commit: () => this.commit(),
+      suggest: (s) => this.suggest(s),
+      match: () => this.latestMatch,
+    });
+    this.commentator = new Commentator({
+      enabled: () => this.state.autopilot.commentator && (this.state.autopilot.enabled || this.isLive),
+      voice: () => this.state.autopilot.voice,
+      chatterSeconds: () => this.state.autopilot.chatterSeconds,
+      match: () => this.latestMatch,
+      matches: () => this.hub.cachedMatches(),
+      poll: () => this.state.brand.pollQuestion,
+      emit: (line) => this.speak(line),
+    });
+    this.autoMatchTimer = setInterval(() => void this.autoMatch(), 60_000);
+    this.autoMatchTimer.unref?.();
+    if (record.matchKey) this.setMatch(record.matchKey);
+  }
+
+  get roomName() {
+    return `studio:${this.state.id}`;
+  }
+
+  get host(): Participant | undefined {
+    return this.state.participants.find((p) => p.role === 'host');
+  }
+
+  get isLive() {
+    return !!this.pipeline?.running;
+  }
+
+  guests(): Participant[] {
+    return this.state.participants.filter((p) => p.role === 'guest');
+  }
+
+  setMatch(key: string | null) {
+    this.unsubMatch?.();
+    this.unsubMatch = null;
+    this.latestMatch = null;
+    this.postSince = 0;
+    this.state.matchKey = key;
+    this.automation.refreshPlaylist();
+    if (key) {
+      let first = true;
+      this.unsubMatch = this.hub.subscribe(key, ({ detail, events }) => {
+        this.latestMatch = detail;
+        this.io.to(this.roomName).emit('match:update', detail);
+        if (first) {
+          first = false;
+          if (this.state.autopilot.enabled) this.commentator.intro(detail, this.state.brand.title);
+        }
+        if (events.length) {
+          this.io.to(this.roomName).emit('match:events', events);
+          this.automation.onEvents(events);
+          this.commentator.onEvents(events);
+        }
+      });
+    }
+    void this.repo.updateStudio(this.state.id, { matchKey: key });
+    this.commit();
+  }
+
+  /** 24/7: keep a live match on air; fall back to the demo replay when nothing is live. */
+  async autoMatch(force = false) {
+    const ap = this.state.autopilot;
+    if (!ap.enabled || !ap.autoMatch) return;
+    const cur = this.latestMatch;
+    if (cur?.state === 'post') this.postSince ||= Date.now();
+    const curDone = !!cur && cur.state === 'post' && Date.now() - this.postSince > 10 * 60_000;
+    const curIdle = !this.state.matchKey || (cur && cur.state === 'pre') || this.state.matchKey === DEMO_KEY;
+    if (!force && !curDone && !curIdle) return;
+    const list = (await this.hub.listMatches()).filter((m) => !m.isDemo);
+    const best = list.filter((m) => m.state === 'in').sort((a, b) => matchRank(b) - matchRank(a))[0];
+    const key = best ? `${best.leagueId}:${best.id}` : DEMO_KEY;
+    if (key !== this.state.matchKey) {
+      this.setMatch(key);
+      this.speakText(best ? `We're heading over to ${best.name}. ${best.statusText}.` : 'No live matches right now, so here is a classic replay.');
+    }
+  }
+
+  /* ---------------- commentary ---------------- */
+
+  private speak(line: CommentaryLine) {
+    this.io.to(this.roomName).emit('commentary:say', line);
+    this.io.to(this.roomName).emit('captions:text', { from: 'AI Commentator', text: line.text, final: true, ts: Date.now() });
+  }
+
+  speakText(text: string, priority = 2) {
+    if (!this.state.autopilot.commentator) return;
+    this.speak({ id: `m${Date.now()}`, text, voice: this.state.autopilot.voice, priority, ts: Date.now() });
+  }
+
+  /* ---------------- live pipeline ---------------- */
+
+  private internalWebUrl() {
+    if (config.internalWebUrl) return config.internalWebUrl;
+    // production serves the built UI itself; in development the Vite dev server has the latest code
+    return process.env.NODE_ENV === 'production' && existsSync(config.webDist) ? `http://127.0.0.1:${config.port}` : config.publicUrl;
+  }
+
+  /** socket that must produce the WebM feed right now */
+  producerSocket(): string | undefined {
+    if (!this.pipeline) return undefined;
+    return this.state.live.broadcaster === 'cloud' ? this.producerId ?? undefined : this.host?.id;
+  }
+
+  async loadTargets(): Promise<StreamTarget[]> {
+    const dests = (await this.repo.listDestinations(this.state.id)).filter((d) => d.enabled);
+    return dests.map((d) => ({ id: d.id, platform: d.platform, name: d.name, url: d.url, key: decrypt(d.keyEnc) }));
+  }
+
+  async startLive(broadcaster: 'host' | 'cloud'): Promise<{ ok: boolean; error?: string }> {
+    if (this.pipeline?.running) return { ok: false, error: 'Already live' };
+    const targets = await this.loadTargets();
+    if (!targets.length) return { ok: false, error: 'Add and enable at least one destination (YouTube, Facebook, X, Twitch…).' };
+    if (broadcaster === 'cloud' && !findChrome()) return { ok: false, error: 'Cloud producer needs Chrome/Chromium on the server (set CHROME_PATH).' };
+    const p = new LivePipeline(this.state.id, targets, broadcaster);
+    this.pipeline = p;
+    p.on('status', (s) => {
+      if (this.pipeline !== p) return;
+      this.state.live = { ...s, mode: 'mesh', broadcaster: this.state.live.broadcaster ?? broadcaster };
+      this.commit();
+    });
+    p.on('needRestart', () => {
+      const id = this.producerSocket();
+      if (id) this.io.to(id).emit('stream:restart');
+    });
+    p.on('log', (line: string) => this.logToHost(line));
+    this.state.live = { ...this.state.live, broadcaster };
+    p.start();
+    this.state.wantLive = true;
+    if (broadcaster === 'cloud') {
+      this.state.autopilot = { ...this.state.autopilot, enabled: true, cloud: true };
+      await this.ensureCloud();
+    }
+    this.commit();
+    void this.persist();
+    return { ok: true };
+  }
+
+  async ensureCloud() {
+    if (this.cloud?.running) return;
+    const web = this.internalWebUrl();
+    // connect the producer's socket straight to this server (never through a dev proxy) — it carries ~6 Mbps
+    const api = `http://127.0.0.1:${config.port}`;
+    const url = `${web}/program/${this.state.id}?k=${encodeURIComponent(config.workerSecret)}&producer=1${web.startsWith(api) ? '' : `&api=${encodeURIComponent(api)}`}`;
+    const c = new CloudProducer(this.state.id, url);
+    this.cloud = c;
+    c.on('log', (l: string) => this.logToHost(l));
+    c.on('error', (e: Error) => {
+      this.state.live = { ...this.state.live, state: 'error', error: e.message };
+      this.commit();
+    });
+    await c.start();
+  }
+
+  /** producer (cloud page) connected → tell it to start recording if we're live */
+  onProducerJoined(socketId: string) {
+    this.producerId = socketId;
+    if (this.pipeline?.running && this.state.live.broadcaster === 'cloud') this.io.to(socketId).emit('producer:start');
+  }
+
+  /** host browser dropped while it was the producer → hand the show to the cloud */
+  scheduleFailover() {
+    if (!this.pipeline?.running || this.state.live.broadcaster !== 'host') return;
+    if (this.hostLeftTimer) clearTimeout(this.hostLeftTimer);
+    this.hostLeftTimer = setTimeout(async () => {
+      this.hostLeftTimer = null;
+      if (this.host || !this.pipeline?.running) return;
+      if (!findChrome()) {
+        this.logToHost('Host disconnected and no cloud producer is available — stream paused.');
+        return;
+      }
+      this.state.live = { ...this.state.live, broadcaster: 'cloud' };
+      this.state.autopilot = { ...this.state.autopilot, enabled: true };
+      this.commit();
+      await this.ensureCloud();
+    }, config.hostFailoverMs);
+  }
+
+  async stopLive() {
+    this.state.wantLive = false;
+    this.pipeline?.stop();
+    this.pipeline = null;
+    await this.cloud?.stop();
+    this.cloud = null;
+    const id = this.producerId;
+    if (id) this.io.to(id).emit('producer:stop');
+    this.state.live = {
+      ...this.state.live,
+      state: 'idle',
+      startedAt: undefined,
+      error: undefined,
+      destinations: this.state.live.destinations.map((d) => ({ ...d, state: 'idle' })),
+    };
+    this.commit();
+    void this.persist();
+  }
+
+  private logToHost(line: string) {
+    const h = this.host;
+    if (h) this.io.to(h.id).emit('stream:log', line);
+  }
+
+  /* ---------------- state sync ---------------- */
+
+  /** Coalesce state broadcasts to one per tick. */
+  commit() {
+    if (!this.emitQueued) {
+      this.emitQueued = true;
+      queueMicrotask(() => {
+        this.emitQueued = false;
+        this.io.to(this.roomName).emit('studio:state', this.state);
+      });
+    }
+    if (this.persistTimer) clearTimeout(this.persistTimer);
+    this.persistTimer = setTimeout(() => void this.persist(), 1500);
+  }
+
+  async persist() {
+    const settings = JSON.stringify(Object.fromEntries(PERSISTED.map((k) => [k, this.state[k]])));
+    await this.repo.updateStudio(this.state.id, { settings, name: this.state.name });
+  }
+
+  suggest(s: Suggestion) {
+    const host = this.host;
+    if (host) this.io.to(host.id).emit('automation:suggestion', s);
+  }
+
+  simulate(type: CricketEvent['type']): CricketEvent {
+    const last = this.latestMatch?.recentBalls.at(-1);
+    const titles: Record<string, [string, string?, number?]> = {
+      FOUR: ['FOUR!', last ? `${last.batsman?.name ?? 'Batter'} finds the rope` : 'Cracking shot to the fence'],
+      SIX: ['SIX!', last ? `${last.batsman?.name ?? 'Batter'} goes downtown` : 'Into the stands!'],
+      WICKET: ['WICKET!', last?.batsman ? `${last.batsman.name} has to go` : 'Big breakthrough', (last?.inningsWickets ?? 0) + 1],
+      MILESTONE_BAT: [`FIFTY! ${last?.batsman?.name ?? ''}`.trim(), 'Raises the bat to the dressing room', 50],
+      MILESTONE_BOWL: [`FIVE-WICKET HAUL! ${last?.bowler?.name ?? ''}`.trim(), 'A spell to remember', 5],
+      PARTNERSHIP: ['50 PARTNERSHIP', [last?.batsman?.name, last?.nonStriker?.name].filter(Boolean).join(' & '), 50],
+      HATTRICK_WATCH: ['ON A HAT-TRICK!', `${last?.bowler?.name ?? 'Bowler'} — two in two`],
+      OVER_END: [`End of over ${last?.overNumber ?? 1}`, `${last?.overRuns ?? 0} runs`, last?.overNumber ?? 1],
+      INNINGS_END: ['Innings Break', 'Time for the experts'],
+      MATCH_END: ['Match Over', this.latestMatch?.summary ?? ''],
+    };
+    const [title, subtitle, value] = titles[type] ?? [type];
+    const ev: CricketEvent = {
+      type,
+      matchKey: this.state.matchKey ?? 'sim',
+      ball: last,
+      title,
+      subtitle,
+      value,
+      player: last?.batsman?.name,
+      ts: Date.now(),
+    };
+    this.io.to(this.roomName).emit('match:events', [ev]);
+    this.automation.applyEvent(ev);
+    this.commentator.onEvents([ev]);
+    return ev;
+  }
+
+  get keepAlive() {
+    return this.isLive || this.state.wantLive;
+  }
+
+  dispose() {
+    this.unsubMatch?.();
+    this.automation.dispose();
+    this.commentator.dispose();
+    clearInterval(this.autoMatchTimer);
+    this.pipeline?.stop();
+    void this.cloud?.stop();
+    if (this.persistTimer) clearTimeout(this.persistTimer);
+    void this.persist();
+  }
+}
