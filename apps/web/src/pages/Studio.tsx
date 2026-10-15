@@ -282,7 +282,7 @@ function StudioRoom({ client: c, hostToken, programToken, onLeave }: { client: S
           </Tabs>
           <Box sx={{ p: 2, overflow: 'auto', flex: 1 }}>
             {tab === 'match' && <MatchPanel client={client} />}
-            {tab === 'pilot' && <AutopilotPanel client={client} hasDestinations={dests.list.some((d) => d.enabled)} onGoCloud={() => void guards(client.goLive('cloud'))} />}
+            {tab === 'pilot' && <AutopilotPanel client={client} hostToken={hostToken} hasDestinations={dests.list.some((d) => d.enabled)} onGoCloud={() => void guards(client.goLive('cloud'))} />}
             {tab === 'auto' && <AutomationPanel client={client} />}
             {tab === 'audio' && <AudioPanel client={client} hostToken={hostToken} />}
             {tab === 'stream' && <DestinationsPanel client={client} hostToken={hostToken} dests={dests} />}

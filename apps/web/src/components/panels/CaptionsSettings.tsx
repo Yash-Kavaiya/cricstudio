@@ -1,8 +1,9 @@
 import { useState } from 'react';
-import { Alert, Box, Button, ButtonBase, Chip, CircularProgress, FormControlLabel, MenuItem, Stack, Switch, TextField, Typography } from '@mui/material';
+import { Alert, Box, ButtonBase, Chip, FormControlLabel, MenuItem, Stack, Switch, TextField, Typography } from '@mui/material';
 import { STT_LANGUAGES, type SttProvider } from '@cricstudio/shared';
 import { speechSupported } from '../../captions/speech';
 import { api, type CloudSttProvider } from '../../lib/api';
+import { ApiKeyField } from './ApiKeyField';
 import type { StudioClient } from '../../lib/studioClient';
 import { Icon } from '../Icon';
 
@@ -44,36 +45,16 @@ export function CaptionsSettings({ client, hostToken }: { client: StudioClient; 
   const st = client.state!;
   const stt = st.stt;
   const status = client.captionStatus;
-  const [keys, setKeys] = useState<Record<CloudSttProvider, string>>({ gnani: '', google: '', gemini: '' });
   const [model, setModel] = useState(stt.geminiModel);
-  const [busy, setBusy] = useState<string | null>(null);
-  const [msg, setMsg] = useState<{ p: CloudSttProvider; ok: boolean; text: string } | null>(null);
+  const [err, setErr] = useState<string | null>(null);
 
   const save = async (body: Parameters<typeof api.saveStt>[2]) => {
+    setErr(null);
     try {
       await api.saveStt(st.id, hostToken, body);
     } catch (e) {
-      setMsg({ p: (body.provider as CloudSttProvider) ?? 'gnani', ok: false, text: (e as Error).message });
+      setErr((e as Error).message);
     }
-  };
-
-  const saveKey = async (p: CloudSttProvider) => {
-    setBusy(`save-${p}`);
-    setMsg(null);
-    const r = await api.testStt(st.id, hostToken, p, keys[p]).catch((e: Error) => ({ ok: false, error: e.message, ms: 0 }));
-    if (r.ok) {
-      await save({ keys: { [p]: keys[p] }, provider: p, ...(p === 'gemini' ? { geminiModel: model } : {}) });
-      setKeys((k) => ({ ...k, [p]: '' }));
-      setMsg({ p, ok: true, text: `Key works (${r.ms} ms) and is saved encrypted on the server.` });
-    } else setMsg({ p, ok: false, text: `Key check failed: ${r.error}` });
-    setBusy(null);
-  };
-
-  const testSaved = async (p: CloudSttProvider) => {
-    setBusy(`test-${p}`);
-    const r = await api.testStt(st.id, hostToken, p).catch((e: Error) => ({ ok: false, error: e.message, ms: 0 }));
-    setMsg({ p, ok: r.ok, text: r.ok ? `Connected · ${r.ms} ms round trip` : `Failed: ${r.error}` });
-    setBusy(null);
   };
 
   const engineLabel = ENGINES.find((e) => e.id === status.engine)?.name ?? 'Off';
@@ -151,45 +132,15 @@ export function CaptionsSettings({ client, hostToken }: { client: StudioClient; 
                     helperText="Any audio-capable Gemini model id, e.g. gemini-2.5-flash"
                   />
                 )}
-                <Stack direction="row" spacing={1}>
-                  <TextField
-                    fullWidth
-                    type="password"
-                    autoComplete="off"
-                    label={configured ? `${e.keyLabel} (saved — paste to replace)` : e.keyLabel}
-                    value={keys[cloud]}
-                    onChange={(ev) => setKeys((k) => ({ ...k, [cloud]: ev.target.value }))}
-                  />
-                  <Button variant="contained" disabled={!keys[cloud].trim() || !!busy} onClick={() => void saveKey(cloud)} sx={{ flexShrink: 0 }}>
-                    {busy === `save-${cloud}` ? <CircularProgress size={18} color="inherit" /> : 'Save'}
-                  </Button>
-                </Stack>
-                <Stack direction="row" spacing={1} alignItems="center">
-                  <Typography variant="caption" color="text.secondary" sx={{ flex: 1 }}>
-                    {e.keyHelp} ·{' '}
-                    <a href={e.keyUrl} target="_blank" rel="noreferrer">
-                      open
-                    </a>
-                  </Typography>
-                  {configured && (
-                    <>
-                      <Button size="small" disabled={!!busy} onClick={() => void testSaved(cloud)}>
-                        {busy === `test-${cloud}` ? <CircularProgress size={16} /> : 'Test'}
-                      </Button>
-                      <Button size="small" color="error" disabled={!!busy} onClick={() => void save({ keys: { [cloud]: null } })}>
-                        Remove
-                      </Button>
-                    </>
-                  )}
-                </Stack>
-                {msg?.p === cloud && <Alert severity={msg.ok ? 'success' : 'error'}>{msg.text}</Alert>}
+                <ApiKeyField client={client} hostToken={hostToken} provider={cloud} />
               </Stack>
             )}
           </Box>
         );
       })}
+      {err && <Alert severity="error">{err}</Alert>}
       <Typography variant="caption" color="text.secondary">
-        Keys are encrypted on the server and never sent back to any browser. If the chosen engine fails, CricStudio tries your other saved engines, then falls back to free
+        Keys are shared with the AI commentator (Auto Live tab). They are encrypted on the server and never sent back to any browser. If the chosen engine fails, CricStudio tries your other saved engines, then falls back to free
         browser speech — captions never stop.
       </Typography>
     </Stack>

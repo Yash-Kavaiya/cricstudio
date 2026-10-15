@@ -130,6 +130,8 @@ export interface CommentatorHost {
   matches(): MatchListItem[];
   poll(): string;
   emit(line: CommentaryLine): void;
+  /** optional AI writer (Gemini): rewrites the template line for this moment; must resolve to the fallback on failure */
+  write?(event: CricketEvent | null, fallback: string, recent: string[]): Promise<{ text: string; ai: boolean }>;
 }
 
 export class Commentator {
@@ -147,12 +149,25 @@ export class Commentator {
     clearInterval(this.timer);
   }
 
-  private speak(text: string, priority: number) {
+  private speak(text: string, priority: number, event: CricketEvent | null = null) {
     if (!text || this.recent.includes(text)) return;
+    this.remember(text);
+    this.lastSpoke = Date.now();
+    const ts = Date.now();
+    const out = (t: string, ai: boolean) => {
+      if (ai) this.remember(t);
+      this.host.emit({ id: `c${++this.seq}-${ts}`, text: t, voice: this.host.voice(), priority, ts, ai });
+    };
+    if (!this.host.write) return out(text, false);
+    void this.host
+      .write(event, text, this.recent)
+      .then((r) => out(r.text || text, r.ai))
+      .catch(() => out(text, false));
+  }
+
+  private remember(text: string) {
     this.recent.push(text);
     if (this.recent.length > 30) this.recent.shift();
-    this.lastSpoke = Date.now();
-    this.host.emit({ id: `c${++this.seq}-${Date.now()}`, text, voice: this.host.voice(), priority, ts: Date.now() });
   }
 
   onEvents(events: CricketEvent[]) {
@@ -210,7 +225,7 @@ export class Commentator {
         prio = 6;
         break;
     }
-    if (tpl) this.speak(fill(pick(tpl), ev, d), prio);
+    if (tpl) this.speak(fill(pick(tpl), ev, d), prio, ev);
   }
 
   /** unprompted, context-aware lines during quiet spells */

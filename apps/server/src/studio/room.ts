@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import type { Server } from 'socket.io';
-import type { ChatMessage, CommentaryLine, CricketEvent, MatchDetail, MatchListItem, Participant, StudioState, SttProvider, Suggestion } from '@cricstudio/shared';
+import { EDGE_LANG_VOICES, GNANI_VOICES, type AiCommentaryStatus, type ChatMessage, type CommentaryLine, type CricketEvent, type MatchDetail, type MatchListItem, type Participant, type StudioState, type SttProvider, type Suggestion } from '@cricstudio/shared';
+import { eventFacts, geminiCommentary, gnaniSpeech, matchFacts } from '../commentary/ai';
 import { AutomationEngine } from '../automation/rules';
 import { Commentator } from '../commentary/commentator';
 import { config } from '../config';
@@ -64,6 +65,10 @@ export function defaultState(rec: StudioRecord): StudioState {
       autoMusic: true,
       autoMatch: false,
       cloud: false,
+      writer: 'templates',
+      voiceEngine: 'edge',
+      gnaniVoice: 'Shubham',
+      commentaryLanguage: 'en-IN',
     },
     stt: { provider: 'browser', language: 'en-IN', geminiModel: 'gemini-2.5-flash', configured: { gnani: false, google: false, gemini: false } },
     transition: 'fadeZoom',
@@ -142,6 +147,7 @@ export class StudioRoom {
       matches: () => this.hub.cachedMatches(),
       poll: () => this.state.brand.pollQuestion,
       emit: (line) => this.speak(line),
+      write: (ev, fallback, recent) => this.writeLine(ev, fallback, recent),
     });
     this.autoMatchTimer = setInterval(() => void this.autoMatch(), 60_000);
     this.autoMatchTimer.unref?.();
@@ -211,14 +217,118 @@ export class StudioRoom {
 
   /* ---------------- commentary ---------------- */
 
-  private speak(line: CommentaryLine) {
+  /** Gemini rewrite of a commentary moment; resolves to the template line whenever AI is off or failing. */
+  private async writeLine(ev: CricketEvent | null, fallback: string, recent: string[]): Promise<{ text: string; ai: boolean }> {
+    const ap = this.state.autopilot;
+    if (ap.writer !== 'gemini') return { text: fallback, ai: false };
+    const key = this.sttKey('gemini');
+    if (!key) {
+      this.setAiStatus({ writer: 'fallback', error: 'Gemini selected but no Google AI Studio key is saved' });
+      return { text: fallback, ai: false };
+    }
+    try {
+      const text = await geminiCommentary({
+        key,
+        model: this.state.stt.geminiModel,
+        language: ap.commentaryLanguage ?? 'en-IN',
+        facts: matchFacts(this.latestMatch),
+        event: eventFacts(ev),
+        fallback,
+        recent,
+      });
+      this.setAiStatus({ writer: 'gemini', error: undefined });
+      return { text, ai: true };
+    } catch (e) {
+      this.setAiStatus({ writer: 'fallback', error: (e as Error).message });
+      return { text: fallback, ai: false };
+    }
+  }
+
+  private setAiStatus(p: Partial<AiCommentaryStatus>) {
+    const ap = this.state.autopilot;
+    const base: AiCommentaryStatus = this.state.aiStatus ?? { writer: ap.writer === 'gemini' ? 'gemini' : 'templates', voice: ap.voiceEngine === 'gnani' ? 'gnani' : 'edge' };
+    const next = { ...base, ...p };
+    if (JSON.stringify(next) === JSON.stringify(this.state.aiStatus)) return;
+    this.state.aiStatus = next;
+    this.commit();
+  }
+
+  /** recent lines (id -> line + Gnani audio) so 'commentary:tts' can only voice what the commentator said */
+  private lines = new Map<string, { line: CommentaryLine; audio?: Promise<Buffer> }>();
+
+  private speak(lineIn: CommentaryLine) {
+    const ap = this.state.autopilot;
+    // AI lines are written in the chosen language; templates and system lines are English
+    const lang = lineIn.ai ? (ap.commentaryLanguage ?? 'en-IN') : (lineIn.lang ?? 'en-IN');
+    const edgeVoice = lang.startsWith('en') ? ap.voice : (EDGE_LANG_VOICES[lang] ?? ap.voice);
+    const gnani = ap.voiceEngine === 'gnani' && !!this.sttKey('gnani');
+    if (ap.voiceEngine === 'gnani' && !gnani) this.setAiStatus({ voice: 'fallback', error: 'Gnani voice selected but no Gnani key is saved' });
+    const line: CommentaryLine = { ...lineIn, lang, voice: edgeVoice, engine: gnani ? 'gnani' : 'edge' };
+    const entry: { line: CommentaryLine; audio?: Promise<Buffer> } = { line };
+    if (gnani) {
+      // start synthesis now so the audio is ready (or nearly) when the program page asks for it
+      entry.audio = gnaniSpeech({
+        key: this.sttKey('gnani')!,
+        text: line.text,
+        voice: GNANI_VOICES.some((v) => v.id === ap.gnaniVoice) ? ap.gnaniVoice! : 'Shubham',
+        language: lang,
+        excited: line.priority >= 2,
+      });
+      entry.audio.then(
+        () => this.setAiStatus({ voice: 'gnani' }),
+        (e: Error) => this.setAiStatus({ voice: 'fallback', error: e.message }),
+      );
+    }
+    this.lines.set(line.id, entry);
+    while (this.lines.size > 20) this.lines.delete(this.lines.keys().next().value!);
     this.io.to(this.roomName).emit('commentary:say', line);
     this.io.to(this.roomName).emit('captions:text', { from: 'AI Commentator', text: line.text, final: true, ts: Date.now() });
   }
 
-  speakText(text: string, priority = 2) {
+  speakText(text: string, priority = 2, lang?: string) {
     if (!this.state.autopilot.commentator) return;
-    this.speak({ id: `m${Date.now()}`, text, voice: this.state.autopilot.voice, priority, ts: Date.now() });
+    this.speak({ id: `m${Date.now()}`, text, voice: this.state.autopilot.voice, priority, ts: Date.now(), lang });
+  }
+
+  /** Gnani audio for a line this room spoke (WAV), or null -> client uses the Edge fallback voice. */
+  async ttsLine(id: string): Promise<Buffer | null> {
+    const e = this.lines.get(id);
+    if (!e?.audio) return null;
+    try {
+      return await e.audio;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Check the AI commentary setup end-to-end with a sample line. */
+  async testCommentary(): Promise<{ text: string; ai: boolean; writerError?: string; voiceOk?: boolean; voiceError?: string; audio?: Buffer }> {
+    const ap = this.state.autopilot;
+    const fallback = 'What a shot! That races away to the boundary for four.';
+    const out: { text: string; ai: boolean; writerError?: string; voiceOk?: boolean; voiceError?: string; audio?: Buffer } = { text: fallback, ai: false };
+    if (ap.writer === 'gemini') {
+      const key = this.sttKey('gemini');
+      if (!key) out.writerError = 'No Google AI Studio key saved';
+      else
+        try {
+          out.text = await geminiCommentary({ key, model: this.state.stt.geminiModel, language: ap.commentaryLanguage ?? 'en-IN', facts: matchFacts(this.latestMatch), event: 'A cracking boundary just now.', fallback, recent: [] });
+          out.ai = true;
+        } catch (e) {
+          out.writerError = (e as Error).message;
+        }
+    }
+    if (ap.voiceEngine === 'gnani') {
+      const key = this.sttKey('gnani');
+      if (!key) out.voiceError = 'No Gnani key saved';
+      else
+        try {
+          out.audio = await gnaniSpeech({ key, text: out.text, voice: ap.gnaniVoice ?? 'Shubham', language: out.ai ? (ap.commentaryLanguage ?? 'en-IN') : 'en-IN', excited: true });
+          out.voiceOk = true;
+        } catch (e) {
+          out.voiceError = (e as Error).message;
+        }
+    }
+    return out;
   }
 
   /* ---------------- live pipeline ---------------- */
@@ -364,6 +474,7 @@ export class StudioRoom {
     }
     stt.configured = { gnani: !!this.sttKeys.gnani, google: !!this.sttKeys.google, gemini: !!this.sttKeys.gemini };
     this.state.stt = stt;
+    this.state.aiStatus = undefined; // keys changed: let the AI commentary status re-evaluate
     this.commit();
     void this.persist();
     return stt;

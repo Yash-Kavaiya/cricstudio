@@ -1,10 +1,11 @@
 import { useState } from 'react';
-import { Alert, Box, Button, Chip, Divider, FormControlLabel, MenuItem, Slider, Stack, Switch, TextField, Typography } from '@mui/material';
-import { VOICES, type AutopilotSettings } from '@cricstudio/shared';
+import { Alert, Box, Button, Chip, Divider, FormControlLabel, Slider, Stack, Switch, TextField, Typography } from '@mui/material';
+import type { AutopilotSettings } from '@cricstudio/shared';
 import type { StudioClient } from '../../lib/studioClient';
 import { Icon } from '../Icon';
+import { AiCommentarySettings } from './AiCommentarySettings';
 
-export function AutopilotPanel({ client, onGoCloud, hasDestinations }: { client: StudioClient; onGoCloud: () => void; hasDestinations: boolean }) {
+export function AutopilotPanel({ client, hostToken, onGoCloud, hasDestinations }: { client: StudioClient; hostToken: string; onGoCloud: () => void; hasDestinations: boolean }) {
   const st = client.state!;
   const ap = st.autopilot;
   const [say, setSay] = useState('');
@@ -116,13 +117,7 @@ export function AutopilotPanel({ client, onGoCloud, hasDestinations }: { client:
         <Typography variant="caption" color="text.secondary">
           Human-like neural voice reacts to every boundary, wicket and milestone, and chats about the chase, partnerships and other games between deliveries.
         </Typography>
-        <TextField select fullWidth label="Voice" value={ap.voice} onChange={(e) => patch({ voice: e.target.value })} sx={{ mt: 1.5 }}>
-          {VOICES.map((v) => (
-            <MenuItem key={v.id} value={v.id}>
-              {v.label}
-            </MenuItem>
-          ))}
-        </TextField>
+        <AiCommentarySettings client={client} hostToken={hostToken} />
         <Typography variant="caption" color="text.secondary" component="div" sx={{ mt: 1.5 }}>
           Chatter every ~{ap.chatterSeconds}s when the game is quiet
         </Typography>

@@ -337,7 +337,47 @@ export interface AutopilotSettings {
   autoMatch: boolean;
   /** headless cloud worker renders + streams (no browser needed) */
   cloud: boolean;
+  /** who writes the commentary: built-in templates (free) or Gemini via Google AI Studio */
+  writer?: CommentaryWriter;
+  /** who speaks it: free Edge neural voices or Gnani Timbre */
+  voiceEngine?: CommentaryVoiceEngine;
+  /** Gnani Timbre v3.0 voice id */
+  gnaniVoice?: string;
+  /** language the commentary is written and spoken in (BCP-47) */
+  commentaryLanguage?: string;
 }
+
+export type CommentaryWriter = 'templates' | 'gemini';
+export type CommentaryVoiceEngine = 'edge' | 'gnani';
+
+/** Gnani Timbre v3.0 voices — every voice speaks all 10 Indian languages. */
+export const GNANI_VOICES: { id: string; label: string }[] = [
+  { id: 'Shubham', label: 'Shubham · male, energetic' },
+  { id: 'Devansh', label: 'Devansh · male, young & lively' },
+  { id: 'Yashraj', label: 'Yashraj · male, warm narrator' },
+  { id: 'Avinash', label: 'Avinash · male, firm' },
+  { id: 'Prakash', label: 'Prakash · male, steady' },
+  { id: 'Harshad', label: 'Harshad · male, professional' },
+  { id: 'Lakshmi', label: 'Lakshmi · female, expressive' },
+  { id: 'Vasudha', label: 'Vasudha · female, expressive' },
+  { id: 'Riyaa', label: 'Riyaa · female, confident' },
+  { id: 'Shivani', label: 'Shivani · female, warm' },
+  { id: 'Kalpana', label: 'Kalpana · female, composed' },
+  { id: 'Chetana', label: 'Chetana · female, gentle' },
+  { id: 'Tarika', label: 'Tarika · female, reassuring' },
+];
+
+/** Free Edge neural voices used when commentary is in an Indian language (fallback for Gnani). */
+export const EDGE_LANG_VOICES: Record<string, string> = {
+  'hi-IN': 'hi-IN-MadhurNeural',
+  'bn-IN': 'bn-IN-BashkarNeural',
+  'gu-IN': 'gu-IN-NiranjanNeural',
+  'kn-IN': 'kn-IN-GaganNeural',
+  'ml-IN': 'ml-IN-MidhunNeural',
+  'mr-IN': 'mr-IN-ManoharNeural',
+  'ta-IN': 'ta-IN-ValluvarNeural',
+  'te-IN': 'te-IN-MohanNeural',
+};
 
 /** Live-caption speech-to-text engine. `browser` = free Web Speech API (Chrome/Edge), used as fallback. */
 export type SttProvider = 'browser' | 'gnani' | 'google' | 'gemini';
@@ -371,9 +411,22 @@ export const STT_LANGUAGES: { code: string; label: string }[] = [
 export interface CommentaryLine {
   id: string;
   text: string;
+  /** Edge voice (always set — it's the fallback) */
   voice: string;
   priority: number;
   ts: number;
+  /** speak with Gnani via the studio socket ('commentary:tts'); falls back to `voice` */
+  engine?: CommentaryVoiceEngine;
+  lang?: string;
+  /** written by Gemini (true) or a template */
+  ai?: boolean;
+}
+
+/** live health of the AI commentary engines (not persisted) */
+export interface AiCommentaryStatus {
+  writer: 'templates' | 'gemini' | 'fallback';
+  voice: 'edge' | 'gnani' | 'fallback';
+  error?: string;
 }
 
 export const VOICES: { id: string; label: string }[] = [
@@ -418,6 +471,8 @@ export interface StudioState {
   autopilot: AutopilotSettings;
   /** live-caption speech-to-text engine */
   stt: SttSettings;
+  /** live status of Gemini / Gnani commentary (runtime only) */
+  aiStatus?: AiCommentaryStatus;
   /** transition for the current cut, chosen by the server so every renderer matches */
   transition: TransitionId;
   /** non-null when live is desired (survives restarts for 24/7 resume) */

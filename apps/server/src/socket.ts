@@ -5,6 +5,8 @@ import {
   SCENE_IDS,
   TRANSITIONS,
   VOICES,
+  GNANI_VOICES,
+  STT_LANGUAGES,
   type AutopilotSettings,
   type ChatMessage,
   type CricketEvent,
@@ -48,6 +50,11 @@ function sanitizeAutopilot(cur: AutopilotSettings, p: Partial<AutopilotSettings>
     autoMusic: typeof p.autoMusic === 'boolean' ? p.autoMusic : cur.autoMusic,
     autoMatch: typeof p.autoMatch === 'boolean' ? p.autoMatch : cur.autoMatch,
     cloud: typeof p.cloud === 'boolean' ? p.cloud : cur.cloud,
+    writer: p.writer === 'gemini' || p.writer === 'templates' ? p.writer : (cur.writer ?? 'templates'),
+    voiceEngine: p.voiceEngine === 'gnani' || p.voiceEngine === 'edge' ? p.voiceEngine : (cur.voiceEngine ?? 'edge'),
+    gnaniVoice: p.gnaniVoice && GNANI_VOICES.some((v) => v.id === p.gnaniVoice) ? p.gnaniVoice : (cur.gnaniVoice ?? 'Shubham'),
+    commentaryLanguage:
+      p.commentaryLanguage && STT_LANGUAGES.some((l) => l.code === p.commentaryLanguage) ? p.commentaryLanguage : (cur.commentaryLanguage ?? 'en-IN'),
   };
 }
 
@@ -177,7 +184,9 @@ export function registerSocket(io: Server, studios: StudioManager, hub: MatchHub
         }
         if (patch.autopilot) {
           const was = s.autopilot.enabled;
+          const prevAi = `${s.autopilot.writer}|${s.autopilot.voiceEngine}`;
           s.autopilot = sanitizeAutopilot(s.autopilot, patch.autopilot);
+          if (`${s.autopilot.writer}|${s.autopilot.voiceEngine}` !== prevAi) s.aiStatus = undefined; // fresh status for the new engines
           r.automation.refreshPlaylist();
           if (!was && s.autopilot.enabled) {
             r.commentator.intro(r.latestMatch, s.brand.title);
@@ -323,6 +332,22 @@ export function registerSocket(io: Server, studios: StudioManager, hub: MatchHub
         sttBusy = false;
       }
     });
+
+    // Gnani voice for a commentary line (only lines this room actually spoke)
+    socket.on('commentary:tts', async ({ id }: { id: string }, ack: Ack = noop) => {
+      const r = room();
+      if (!r || typeof id !== 'string') return ack({ ok: false });
+      const audio = await r.ttsLine(id);
+      ack(audio ? { ok: true, audio } : { ok: false });
+    });
+
+    socket.on(
+      'commentary:test',
+      asHost(async (r, _p: unknown, ack: Ack = noop) => {
+        const t = await r.testCommentary();
+        ack({ ok: true, ...t });
+      }),
+    );
 
     socket.on('livekit:token', async (_: unknown, ack: Ack = noop) => {
       const r = room();

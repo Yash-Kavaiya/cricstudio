@@ -830,9 +830,18 @@ export class StudioClient {
         this.commentary = line;
         this.notify();
         try {
-          const res = await fetch(`${this.opts.apiBase ?? API_BASE}/api/tts?voice=${encodeURIComponent(line.voice)}&text=${encodeURIComponent(line.text)}`);
-          if (!res.ok) throw new Error(`tts ${res.status}`);
-          await this.audio.speak(await res.arrayBuffer());
+          let audio: ArrayBuffer | null = null;
+          if (line.engine === 'gnani') {
+            // Gnani voice is synthesised by the studio server with your key; fall back to Edge on any failure
+            const r = await this.socket.timeout(15_000).emitWithAck('commentary:tts', { id: line.id }).catch(() => null);
+            if (r?.ok && r.audio) audio = r.audio as ArrayBuffer;
+          }
+          if (!audio) {
+            const res = await fetch(`${this.opts.apiBase ?? API_BASE}/api/tts?voice=${encodeURIComponent(line.voice)}&text=${encodeURIComponent(line.text)}`);
+            if (!res.ok) throw new Error(`tts ${res.status}`);
+            audio = await res.arrayBuffer();
+          }
+          await this.audio.speak(audio);
         } catch {
           // offline fallback: browser voice (local monitor only)
           if ('speechSynthesis' in window && this.opts.role === 'host') {
@@ -853,6 +862,11 @@ export class StudioClient {
       this.commentary = null;
       this.notify();
     }
+  }
+
+  /** Host: try the AI commentary setup with a sample line (returns Gnani audio when the voice works). */
+  testCommentary(): Promise<{ ok: boolean; text: string; ai: boolean; writerError?: string; voiceOk?: boolean; voiceError?: string; audio?: ArrayBuffer; error?: string }> {
+    return this.socket.timeout(30_000).emitWithAck('commentary:test', {}).catch((e: Error) => ({ ok: false, text: '', ai: false, error: e.message }));
   }
 
   sayNow(text: string) {

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { MsEdgeTTS, OUTPUT_FORMAT } from 'msedge-tts';
-import { VOICES } from '@cricstudio/shared';
+import { EDGE_LANG_VOICES, VOICES } from '@cricstudio/shared';
 import { config } from '../config';
 
 /**
@@ -37,7 +37,7 @@ export class TtsService {
 
   async synth(textIn: string, voiceIn?: string, rate = '+0%', pitch = '+0Hz'): Promise<Buffer> {
     const text = textIn.replace(/\s+/g, ' ').trim().slice(0, 400);
-    const voice = VOICES.some((v) => v.id === voiceIn) ? voiceIn! : config.ttsVoice;
+    const voice = VOICES.some((v) => v.id === voiceIn) || Object.values(EDGE_LANG_VOICES).includes(voiceIn ?? '') ? voiceIn! : config.ttsVoice;
     const key = createHash('sha1').update(`${voice}|${rate}|${pitch}|${text}`).digest('hex');
     const hit = this.cache.get(key);
     if (hit) {
