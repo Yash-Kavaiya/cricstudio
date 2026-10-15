@@ -44,7 +44,7 @@ async function main() {
     io.adapter(createAdapter(pub, pub.duplicate()));
   }
 
-  const studios = new StudioManager(io, hub, repo);
+  const studios = new StudioManager(io, hub, repo, bus);
   registerHttp(app, hub, repo, studios, new TtsService());
   registerSocket(io, studios, hub, livekit);
 
@@ -72,6 +72,8 @@ async function main() {
   }, 3000);
 
   const shutdown = async () => {
+    // release live studios first so another instance can resume them within seconds
+    await studios.suspendAll();
     io.close();
     await app.close();
     await repo.close();

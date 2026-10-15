@@ -8,6 +8,8 @@ export interface Bus {
   subscribe(channel: string, handler: Handler): () => void;
   /** Acquire/renew a lock owned by this node. */
   tryLock(key: string, ttlMs: number): Promise<boolean>;
+  /** Drop a lock this node owns (no-op if another node holds it). */
+  release(key: string): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -37,6 +39,8 @@ export class InMemoryBus implements Bus {
   async tryLock() {
     return true;
   }
+
+  async release() {}
 
   async close() {
     this.handlers.clear();
@@ -79,6 +83,10 @@ export async function createRedisBus(url: string): Promise<Bus> {
         return true;
       }
       return false;
+    },
+    async release(key) {
+      // compare-and-delete so we never drop a lock another node has since taken
+      await pub.eval("if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end", 1, key, nodeId);
     },
     async close() {
       pub.disconnect();

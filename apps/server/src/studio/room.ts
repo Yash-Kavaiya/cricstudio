@@ -10,9 +10,11 @@ import type { MatchHub } from '../espn/hub';
 import { decrypt, encrypt } from '../store/crypto';
 import { CLOUD_STT, cricketHints, silentWav, transcribeWith, type CloudStt } from '../stt/providers';
 import type { Repo, StudioRecord } from '../store/repo';
+import type { Bus } from '../bus';
 import { LivePipeline, type StreamTarget } from '../stream/pipeline';
 import { CloudProducer, findChrome } from '../worker/cloudProducer';
 
+const LEASE_TTL_MS = 20_000;
 const PERSISTED = ['scene', 'baseScene', 'automation', 'rules', 'music', 'brand', 'countdownTo', 'spotlightId', 'autopilot', 'wantLive', 'stt'] as const;
 
 export function defaultState(rec: StudioRecord): StudioState {
@@ -102,6 +104,7 @@ export class StudioRoom {
   private autoMatchTimer: NodeJS.Timeout;
   private postSince = 0;
   latestMatch: MatchDetail | null = null;
+  private leaseTimer: NodeJS.Timeout | null = null;
   /** encrypted speech-to-text API keys (never broadcast) */
   private sttKeys: Partial<Record<CloudStt, string>> = {};
 
@@ -110,6 +113,7 @@ export class StudioRoom {
     private readonly io: Server,
     private readonly hub: MatchHub,
     private readonly repo: Repo,
+    private readonly bus: Bus,
   ) {
     const base = defaultState(record);
     let saved: Partial<StudioState> = {};
@@ -363,6 +367,11 @@ export class StudioRoom {
     const targets = await this.loadTargets();
     if (!targets.length) return { ok: false, error: 'Add and enable at least one destination (YouTube, Facebook, X, Twitch…).' };
     if (broadcaster === 'cloud' && !findChrome()) return { ok: false, error: 'Cloud producer needs Chrome/Chromium on the server (set CHROME_PATH).' };
+    // one encoder per studio across all server instances — two would fight over the same stream keys
+    if (!(await this.bus.tryLock(this.leaseKey, LEASE_TTL_MS))) {
+      return { ok: false, error: 'This studio is already streaming from another server instance. Try again in ~20 seconds.' };
+    }
+    this.startLease();
     const p = new LivePipeline(this.state.id, targets, broadcaster);
     this.pipeline = p;
     p.on('status', (s) => {
@@ -427,8 +436,47 @@ export class StudioRoom {
     }, config.hostFailoverMs);
   }
 
+  private get leaseKey() {
+    return `cs:live:${this.state.id}`;
+  }
+
+  /** Renew the live lease; if another instance took it, stop our copy of the stream. */
+  private startLease() {
+    if (this.leaseTimer) clearInterval(this.leaseTimer);
+    this.leaseTimer = setInterval(async () => {
+      if (!this.pipeline?.running) return;
+      const ok = await this.bus.tryLock(this.leaseKey, LEASE_TTL_MS).catch(() => true);
+      if (ok) return;
+      this.logToHost('Another server instance took over this live stream — stopping the duplicate here.');
+      this.stopLease();
+      this.pipeline?.stop();
+      this.pipeline = null;
+      await this.cloud?.stop();
+      this.cloud = null;
+    }, 5000);
+    this.leaseTimer.unref?.();
+  }
+
+  private stopLease() {
+    if (this.leaseTimer) clearInterval(this.leaseTimer);
+    this.leaseTimer = null;
+    void this.bus.release(this.leaseKey).catch(() => undefined);
+  }
+
+  /** Server instance shutting down: stop cleanly but keep `wantLive` so the next instance resumes. */
+  async suspendLive() {
+    if (!this.pipeline?.running) return;
+    this.pipeline.stop();
+    this.pipeline = null;
+    await this.cloud?.stop();
+    this.cloud = null;
+    this.stopLease();
+    await this.persist();
+  }
+
   async stopLive() {
     this.state.wantLive = false;
+    this.stopLease();
     this.pipeline?.stop();
     this.pipeline = null;
     await this.cloud?.stop();
@@ -575,6 +623,7 @@ export class StudioRoom {
   }
 
   dispose() {
+    this.stopLease();
     this.unsubMatch?.();
     this.automation.dispose();
     this.commentator.dispose();

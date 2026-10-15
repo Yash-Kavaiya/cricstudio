@@ -212,13 +212,19 @@ export class LivePipeline extends EventEmitter {
       this.status.state = 'error';
       this.emitStatus();
     });
-    proc.on('exit', (code) => {
+    proc.on('exit', (code, signal) => {
       if (this.encoder === proc) this.encoder = null;
       if (this.stopped) return;
       this.encoderRestarts++;
       this.status.reconnects = this.encoderRestarts;
       this.status.state = 'reconnecting';
-      this.status.error = `Encoder restarted (code ${code}). ${this.encTail.slice(-2).join(' | ')}`.slice(0, 300);
+      const why = signal
+        ? signal === 'SIGKILL'
+          ? 'Encoder stalled or ran out of memory (killed) — restarting'
+          : `Encoder stopped by ${signal} (server instance shutting down) — restarting`
+        : `Encoder exited (code ${code}) — restarting`;
+      const err = this.encTail.filter((l) => /error|invalid|fail/i.test(l)).slice(-1);
+      this.status.error = `${why}${err.length ? `. ${err[0]}` : ''}`.slice(0, 300);
       this.emitStatus();
       setTimeout(() => {
         if (this.stopped || this.encoder) return;

@@ -1,4 +1,5 @@
 import type { Server } from 'socket.io';
+import type { Bus } from '../bus';
 import type { MatchHub } from '../espn/hub';
 import type { Repo } from '../store/repo';
 import { StudioRoom } from './room';
@@ -12,7 +13,13 @@ export class StudioManager {
     private readonly io: Server,
     private readonly hub: MatchHub,
     readonly repo: Repo,
+    private readonly bus: Bus,
   ) {}
+
+  /** Instance shutting down (scale-down / redeploy): stop streams cleanly and hand live studios to another instance. */
+  async suspendAll() {
+    await Promise.all([...this.rooms.values()].map((r) => r.suspendLive().catch(() => undefined)));
+  }
 
   get(id: string): StudioRoom | undefined {
     return this.rooms.get(id);
@@ -25,7 +32,7 @@ export class StudioManager {
     if (!p) {
       p = this.repo.getStudio(id).then((rec) => {
         if (!rec) return null;
-        const room = new StudioRoom(rec, this.io, this.hub, this.repo);
+        const room = new StudioRoom(rec, this.io, this.hub, this.repo, this.bus);
         this.rooms.set(id, room);
         return room;
       });
