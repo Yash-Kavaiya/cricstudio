@@ -178,7 +178,11 @@ export function registerSocket(io: Server, studios: StudioManager, hub: MatchHub
         const s = r.state;
         if (patch.automation && ['auto', 'assist', 'manual'].includes(patch.automation)) s.automation = patch.automation;
         if (patch.rules) s.rules = { ...s.rules, ...patch.rules };
-        if (patch.music) s.music = { ...s.music, ...patch.music };
+        if (patch.music) {
+          // a person pressing Stop must win over the autopilot's music bed (it would restart it within 0.5 s)
+          if (patch.music.playing === false && s.music.playing && s.autopilot.autoMusic) s.autopilot = { ...s.autopilot, autoMusic: false };
+          s.music = { ...s.music, ...patch.music };
+        }
         if (patch.brand) {
           const b = { ...s.brand, ...patch.brand };
           if (!BACKGROUNDS.some((x) => x.id === b.background)) b.background = s.brand.background;

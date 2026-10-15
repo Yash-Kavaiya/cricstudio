@@ -67,6 +67,11 @@ export function AudioPanel({ client, hostToken }: { client: StudioClient; hostTo
         <Typography variant="caption" color="text.secondary">
           Original tracks generated live in your browser — 100% royalty-free, safe for YouTube/Facebook Content ID.
         </Typography>
+        {st.autopilot.enabled && st.autopilot.autoMusic && (
+          <Alert severity="info" sx={{ mt: 1, py: 0 }}>
+            Auto Live is choosing the music. Pressing Stop also turns off “Auto music bed”.
+          </Alert>
+        )}
         <List dense sx={{ mx: -1 }}>
           {TRACKS.map((t) => row(t.id, t.title, t.mood, 'play_circle'))}
           {uploads.map((u) => row(u.url, u.title, 'Uploaded track', 'library_music'))}
