@@ -364,6 +364,14 @@ export class StudioRoom {
 
   async startLive(broadcaster: 'host' | 'cloud'): Promise<{ ok: boolean; error?: string }> {
     if (this.pipeline?.running) return { ok: false, error: 'Already live' };
+    if (config.streamingDisabled) {
+      return {
+        ok: false,
+        error:
+          'Live streaming is off on this hosted site: Vercel cuts every connection after ~5 minutes, which ends YouTube streams. ' +
+          'Run CricStudio on your PC (npm run dev) and go live from http://localhost:5180.',
+      };
+    }
     const targets = await this.loadTargets();
     if (!targets.length) return { ok: false, error: 'Add and enable at least one destination (YouTube, Facebook, X, Twitch…).' };
     if (broadcaster === 'cloud' && !findChrome()) return { ok: false, error: 'Cloud producer needs Chrome/Chromium on the server (set CHROME_PATH).' };

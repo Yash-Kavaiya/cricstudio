@@ -68,6 +68,7 @@ async function main() {
       const room = await studios.load(id);
       if (!room || room.isLive || !room.state.wantLive) continue;
       if (!room.state.autopilot.cloud) continue; // a human producer must come back and press Go live
+      if (config.streamingDisabled) continue; // this host can't hold a stream
       const res = await room.startLive('cloud');
       const msg = res.ok ? 'live (cloud producer)' : (res.error ?? 'failed');
       if (resumed.get(id) !== msg) app.log.info(`[resume] studio ${id} → ${msg}`); // log changes only

@@ -43,6 +43,8 @@ export const config = {
     credential: env.TURN_CREDENTIAL ?? '',
   },
   ffmpegPath: env.FFMPEG_PATH ?? 'ffmpeg',
+  /** serverless hosts (Vercel) cut connections after a few minutes — refuse to start RTMP streams there */
+  streamingDisabled: env.STREAMING_DISABLED === '1',
   videoBitrateKbps: int(env.VIDEO_BITRATE_KBPS, 4500),
   audioBitrateKbps: int(env.AUDIO_BITRATE_KBPS, 160),
   x264Preset: env.X264_PRESET ?? 'veryfast',

@@ -14,7 +14,7 @@ FROM node:24-bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg chromium fonts-noto-color-emoji fonts-roboto ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 # /tmp is the writable scratch area; set DATABASE_URL (Postgres) for studios that survive scale-down
-ENV NODE_ENV=production PORT=80 DATA_DIR=/tmp/cricstudio CHROME_PATH=/usr/bin/chromium WORKER_MAX_HEAP_MB=700
+ENV NODE_ENV=production PORT=80 DATA_DIR=/tmp/cricstudio STREAMING_DISABLED=1 CHROME_PATH=/usr/bin/chromium WORKER_MAX_HEAP_MB=700
 COPY --from=build /app /app
 EXPOSE 80
 CMD ["node", "apps/server/dist/index.js"]
