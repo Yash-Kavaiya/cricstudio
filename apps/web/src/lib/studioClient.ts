@@ -13,6 +13,8 @@ import type {
   SceneId,
   SfxId,
   StudioState,
+  SttProvider,
+  SttSettings,
   Suggestion,
 } from '@cricstudio/shared';
 import { AudioEngine } from '../audio/engine';
@@ -862,6 +864,19 @@ export class StudioClient {
       this.commentary = null;
       this.notify();
     }
+  }
+
+  /** Host: save speech/AI settings or keys (null clears a key). Keys are write-only. */
+  saveStt(body: { provider?: SttProvider; language?: string; geminiModel?: string; keys?: Partial<Record<'gnani' | 'google' | 'gemini', string | null>> }) {
+    return this.emit('stt:save', body).then((r: any) => r.stt as SttSettings);
+  }
+
+  /** Host: verify a key (the saved one when `key` is omitted). */
+  testStt(provider: 'gnani' | 'google' | 'gemini', key?: string): Promise<{ ok: boolean; error?: string; ms: number }> {
+    return this.socket
+      .timeout(25_000)
+      .emitWithAck('stt:test', { provider, key })
+      .catch((e: Error) => ({ ok: false, error: e.message, ms: 0 }));
   }
 
   /** Host: try the AI commentary setup with a sample line (returns Gnani audio when the voice works). */

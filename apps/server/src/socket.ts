@@ -19,6 +19,7 @@ import { pickTransition } from './automation/rules';
 import { config, iceServers } from './config';
 import type { MatchHub } from './espn/hub';
 import { tokenMatches } from './store/crypto';
+import { CLOUD_STT, type CloudStt } from './stt/providers';
 import type { StudioManager } from './studio/manager';
 import type { StudioRoom } from './studio/room';
 import type { LiveKitService } from './stream/livekit';
@@ -340,6 +341,21 @@ export function registerSocket(io: Server, studios: StudioManager, hub: MatchHub
       const audio = await r.ttsLine(id);
       ack(audio ? { ok: true, audio } : { ok: false });
     });
+
+    // speech/AI keys + settings go through the host socket so they land on the instance that owns the room
+    socket.on(
+      'stt:save',
+      asHost(async (r, p: Parameters<StudioRoom['setStt']>[0] = {}, ack: Ack = noop) => {
+        ack({ ok: true, stt: r.setStt(p ?? {}) });
+      }),
+    );
+    socket.on(
+      'stt:test',
+      asHost(async (r, p: { provider: CloudStt; key?: string }, ack: Ack = noop) => {
+        if (!CLOUD_STT.includes(p?.provider)) return ack({ ok: false, error: 'Unknown provider', ms: 0 });
+        ack(await r.testStt(p.provider, p.key));
+      }),
+    );
 
     socket.on(
       'commentary:test',

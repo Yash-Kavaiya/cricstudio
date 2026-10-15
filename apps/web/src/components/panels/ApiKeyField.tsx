@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Alert, Button, Chip, CircularProgress, Stack, TextField, Typography } from '@mui/material';
-import { api, type CloudSttProvider } from '../../lib/api';
+import type { CloudSttProvider } from '../../lib/api';
 import type { StudioClient } from '../../lib/studioClient';
 
 export const KEY_INFO: Record<CloudSttProvider, { label: string; help: string; url: string }> = {
@@ -28,10 +28,10 @@ export function ApiKeyField({ client, hostToken, provider }: { client: StudioCli
   const save = async () => {
     setBusy('save');
     setMsg(null);
-    const r = await api.testStt(st.id, hostToken, provider, key).catch((e: Error) => ({ ok: false, error: e.message, ms: 0 }));
+    const r = await client.testStt(provider, key).catch((e: Error) => ({ ok: false, error: e.message, ms: 0 }));
     if (r.ok) {
       try {
-        await api.saveStt(st.id, hostToken, { keys: { [provider]: key } });
+        await client.saveStt({ keys: { [provider]: key } });
         setKey('');
         setMsg({ ok: true, text: `Key works (${r.ms} ms) — saved encrypted on the server.` });
       } catch (e) {
@@ -43,7 +43,7 @@ export function ApiKeyField({ client, hostToken, provider }: { client: StudioCli
 
   const test = async () => {
     setBusy('test');
-    const r = await api.testStt(st.id, hostToken, provider).catch((e: Error) => ({ ok: false, error: e.message, ms: 0 }));
+    const r = await client.testStt(provider).catch((e: Error) => ({ ok: false, error: e.message, ms: 0 }));
     setMsg({ ok: r.ok, text: r.ok ? `Connected · ${r.ms} ms round trip` : `Failed: ${r.error}` });
     setBusy(null);
   };
@@ -76,7 +76,7 @@ export function ApiKeyField({ client, hostToken, provider }: { client: StudioCli
             <Button size="small" disabled={!!busy} onClick={() => void test()}>
               {busy === 'test' ? <CircularProgress size={16} /> : 'Test'}
             </Button>
-            <Button size="small" color="error" disabled={!!busy} onClick={() => void api.saveStt(st.id, hostToken, { keys: { [provider]: null } })}>
+            <Button size="small" color="error" disabled={!!busy} onClick={() => void client.saveStt({ keys: { [provider]: null } })}>
               Remove
             </Button>
           </>

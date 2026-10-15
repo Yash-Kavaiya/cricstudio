@@ -221,6 +221,7 @@ export class StudioRoom {
   private async writeLine(ev: CricketEvent | null, fallback: string, recent: string[]): Promise<{ text: string; ai: boolean }> {
     const ap = this.state.autopilot;
     if (ap.writer !== 'gemini') return { text: fallback, ai: false };
+    if (Date.now() < this.geminiDownUntil) return { text: fallback, ai: false }; // cooling off after a failure
     const key = this.sttKey('gemini');
     if (!key) {
       this.setAiStatus({ writer: 'fallback', error: 'Gemini selected but no Google AI Studio key is saved' });
@@ -239,10 +240,14 @@ export class StudioRoom {
       this.setAiStatus({ writer: 'gemini', error: undefined });
       return { text, ai: true };
     } catch (e) {
+      this.geminiDownUntil = Date.now() + 30_000; // don't make every line wait on a failing API
       this.setAiStatus({ writer: 'fallback', error: (e as Error).message });
       return { text: fallback, ai: false };
     }
   }
+
+  private geminiDownUntil = 0;
+  private gnaniDownUntil = 0;
 
   private setAiStatus(p: Partial<AiCommentaryStatus>) {
     const ap = this.state.autopilot;
@@ -261,7 +266,7 @@ export class StudioRoom {
     // AI lines are written in the chosen language; templates and system lines are English
     const lang = lineIn.ai ? (ap.commentaryLanguage ?? 'en-IN') : (lineIn.lang ?? 'en-IN');
     const edgeVoice = lang.startsWith('en') ? ap.voice : (EDGE_LANG_VOICES[lang] ?? ap.voice);
-    const gnani = ap.voiceEngine === 'gnani' && !!this.sttKey('gnani');
+    const gnani = ap.voiceEngine === 'gnani' && !!this.sttKey('gnani') && Date.now() >= this.gnaniDownUntil;
     if (ap.voiceEngine === 'gnani' && !gnani) this.setAiStatus({ voice: 'fallback', error: 'Gnani voice selected but no Gnani key is saved' });
     const line: CommentaryLine = { ...lineIn, lang, voice: edgeVoice, engine: gnani ? 'gnani' : 'edge' };
     const entry: { line: CommentaryLine; audio?: Promise<Buffer> } = { line };
@@ -276,7 +281,10 @@ export class StudioRoom {
       });
       entry.audio.then(
         () => this.setAiStatus({ voice: 'gnani' }),
-        (e: Error) => this.setAiStatus({ voice: 'fallback', error: e.message }),
+        (e: Error) => {
+          this.gnaniDownUntil = Date.now() + 30_000;
+          this.setAiStatus({ voice: 'fallback', error: e.message });
+        },
       );
     }
     this.lines.set(line.id, entry);
@@ -475,6 +483,7 @@ export class StudioRoom {
     stt.configured = { gnani: !!this.sttKeys.gnani, google: !!this.sttKeys.google, gemini: !!this.sttKeys.gemini };
     this.state.stt = stt;
     this.state.aiStatus = undefined; // keys changed: let the AI commentary status re-evaluate
+    this.geminiDownUntil = this.gnaniDownUntil = 0;
     this.commit();
     void this.persist();
     return stt;

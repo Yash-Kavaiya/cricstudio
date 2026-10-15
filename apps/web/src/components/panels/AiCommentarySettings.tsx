@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { Alert, Box, Button, CircularProgress, MenuItem, Stack, TextField, ToggleButton, ToggleButtonGroup, Typography } from '@mui/material';
 import { GNANI_VOICES, STT_LANGUAGES, VOICES, type AutopilotSettings } from '@cricstudio/shared';
-import { api } from '../../lib/api';
 import type { StudioClient } from '../../lib/studioClient';
 import { Icon } from '../Icon';
 import { ApiKeyField } from './ApiKeyField';
@@ -88,7 +87,7 @@ export function AiCommentarySettings({ client, hostToken }: { client: StudioClie
               label="Gemini model"
               value={model}
               onChange={(e) => setModel(e.target.value)}
-              onBlur={() => model !== st.stt.geminiModel && void api.saveStt(st.id, hostToken, { geminiModel: model })}
+              onBlur={() => model !== st.stt.geminiModel && void client.saveStt({ geminiModel: model })}
               helperText="Shared with Gemini captions, e.g. gemini-2.5-flash"
             />
             <ApiKeyField client={client} hostToken={hostToken} provider="gemini" />

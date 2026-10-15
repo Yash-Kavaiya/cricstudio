@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Alert, Box, ButtonBase, Chip, FormControlLabel, MenuItem, Stack, Switch, TextField, Typography } from '@mui/material';
 import { STT_LANGUAGES, type SttProvider } from '@cricstudio/shared';
 import { speechSupported } from '../../captions/speech';
-import { api, type CloudSttProvider } from '../../lib/api';
+import type { CloudSttProvider } from '../../lib/api';
 import { ApiKeyField } from './ApiKeyField';
 import type { StudioClient } from '../../lib/studioClient';
 import { Icon } from '../Icon';
@@ -48,10 +48,10 @@ export function CaptionsSettings({ client, hostToken }: { client: StudioClient; 
   const [model, setModel] = useState(stt.geminiModel);
   const [err, setErr] = useState<string | null>(null);
 
-  const save = async (body: Parameters<typeof api.saveStt>[2]) => {
+  const save = async (body: Parameters<StudioClient['saveStt']>[0]) => {
     setErr(null);
     try {
-      await api.saveStt(st.id, hostToken, body);
+      await client.saveStt(body);
     } catch (e) {
       setErr((e as Error).message);
     }
