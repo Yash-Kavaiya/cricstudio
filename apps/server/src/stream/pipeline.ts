@@ -124,6 +124,8 @@ export class LivePipeline extends EventEmitter {
   private encBytes = 0;
   /** producer sends H.264 → pass video through */
   private videoCopy = false;
+  /** a fresh encoder only accepts a stream that starts with a WebM header (sent after `resetIngest`) */
+  private awaitingHeader = true;
   readonly status: LiveStatus;
   bytesIn = 0;
 
@@ -170,6 +172,7 @@ export class LivePipeline extends EventEmitter {
     const proc = spawn(config.ffmpegPath, encoderArgs(offset, config, this.videoCopy && config.encoderMode !== 'x264'), { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
     this.encoder = proc;
     this.encBytes = 0;
+    this.awaitingHeader = true;
     proc.stdin.on('error', () => undefined);
     proc.stdout.on('data', (buf: Buffer) => {
       this.lastOutput = Date.now();
@@ -201,6 +204,7 @@ export class LivePipeline extends EventEmitter {
           this.status.speed = sp ? Number(sp[1]) : undefined;
           if (this.status.state === 'starting' || this.status.state === 'reconnecting') {
             this.status.state = 'live';
+            this.status.error = undefined; // recovered
             this.status.startedAt ??= Date.now();
             this.emitStatus();
           }
@@ -237,10 +241,14 @@ export class LivePipeline extends EventEmitter {
   /** Called when the producer (re)starts its MediaRecorder: next chunk is a new WebM header. */
   resetIngest(mime?: string) {
     if (this.stopped) return;
-    const copy = !!mime && /h264|avc1/i.test(mime);
+    // no mime = internal restart (e.g. backlog): keep the current mode instead of falling back to x264
+    const copy = mime ? /h264|avc1/i.test(mime) : this.videoCopy;
     const modeChanged = copy !== this.videoCopy;
     this.videoCopy = copy;
-    if (this.encBytes === 0 && !modeChanged) return; // fresh encoder is already waiting for a header
+    if (this.encBytes === 0 && !modeChanged && this.encoder) {
+      this.awaitingHeader = false; // fresh encoder is already waiting — the header comes next
+      return;
+    }
     const old = this.encoder;
     this.encoder = null;
     if (old) {
@@ -249,6 +257,7 @@ export class LivePipeline extends EventEmitter {
       setTimeout(() => old.kill('SIGKILL'), 1500).unref();
     }
     this.spawnEncoder();
+    this.awaitingHeader = false;
   }
 
   write(chunk: Buffer) {
@@ -257,6 +266,8 @@ export class LivePipeline extends EventEmitter {
     this.bytesIn += chunk.length;
     const e = this.encoder;
     if (!e || e.stdin.destroyed) return;
+    // mid-stream bytes (e.g. flushed after a reconnect) would crash a fresh encoder — wait for a header
+    if (this.awaitingHeader) return;
     if (e.stdin.writableLength > MAX_ENCODER_BACKLOG) {
       // encoder can't keep up (CPU starved): restart cleanly rather than buffer forever
       this.resetIngest();

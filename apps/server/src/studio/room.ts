@@ -1,6 +1,7 @@
-import { existsSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, renameSync, statSync } from 'node:fs';
+import { resolve } from 'node:path';
 import type { Server } from 'socket.io';
-import { EDGE_LANG_VOICES, GNANI_VOICES, type AiCommentaryStatus, type ChatMessage, type CommentaryLine, type CricketEvent, type MatchDetail, type MatchListItem, type Participant, type StudioState, type SttProvider, type Suggestion } from '@cricstudio/shared';
+import { EDGE_LANG_VOICES, GNANI_VOICES, type LiveStatus, type AiCommentaryStatus, type ChatMessage, type CommentaryLine, type CricketEvent, type MatchDetail, type MatchListItem, type Participant, type StudioState, type SttProvider, type Suggestion } from '@cricstudio/shared';
 import { eventFacts, geminiCommentary, gnaniSpeech, matchFacts } from '../commentary/ai';
 import { AutomationEngine } from '../automation/rules';
 import { Commentator } from '../commentary/commentator';
@@ -382,8 +383,14 @@ export class StudioRoom {
     this.startLease();
     const p = new LivePipeline(this.state.id, targets, broadcaster);
     this.pipeline = p;
-    p.on('status', (s) => {
+    let lastLogged = '';
+    p.on('status', (s: LiveStatus) => {
       if (this.pipeline !== p) return;
+      const sig = `${s.state}|${s.error ?? ''}|${s.destinations.map((d) => `${d.name}:${d.state}:${d.error ?? ''}`).join(',')}`;
+      if (sig !== lastLogged) {
+        lastLogged = sig;
+        this.streamLog(`status ${s.state}${s.error ? ` · ${s.error}` : ''} · fps=${s.fps ?? '-'} speed=${s.speed ?? '-'} · ${s.destinations.map((d) => `${d.name}=${d.state}${d.error ? ` (${d.error})` : ''}`).join(', ')}`);
+      }
       this.state.live = { ...s, mode: 'mesh', broadcaster: this.state.live.broadcaster ?? broadcaster };
       this.commit();
     });
@@ -483,6 +490,7 @@ export class StudioRoom {
   }
 
   async stopLive() {
+    this.streamLog('stop requested (End broadcast)');
     this.state.wantLive = false;
     this.stopLease();
     this.pipeline?.stop();
@@ -503,8 +511,31 @@ export class StudioRoom {
   }
 
   private logToHost(line: string) {
+    this.streamLog(line);
     const h = this.host;
     if (h) this.io.to(h.id).emit('stream:log', line);
+  }
+
+  /** Append to data/logs/stream-<id>.log (kept small) so a stopped stream can always be diagnosed later. */
+  streamLog(line: string) {
+    try {
+      const dir = resolve(config.dataDir, 'logs');
+      if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+      const file = resolve(dir, `stream-${this.state.id}.log`);
+      if (existsSync(file) && statSync(file).size > 2_000_000) renameSync(file, `${file}.1`);
+      appendFileSync(file, `${new Date().toISOString()} ${line}\n`);
+    } catch {
+      /* logging must never break streaming */
+    }
+  }
+
+  /** Host browser (re)joined: if the show should be live from this browser, restart the encoder and ask it to send again. */
+  async resumeHostStream(socketId: string) {
+    if (!this.state.wantLive || this.pipeline?.running) return;
+    if ((this.state.live.broadcaster ?? 'host') !== 'host') return;
+    const res = await this.startLive('host');
+    this.streamLog(`host rejoined → resume live: ${res.ok ? 'ok' : res.error}`);
+    if (res.ok) this.io.to(socketId).emit('producer:start');
   }
 
   /* ---------------- state sync ---------------- */

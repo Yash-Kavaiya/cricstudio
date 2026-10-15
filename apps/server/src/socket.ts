@@ -97,6 +97,8 @@ export function registerSocket(io: Server, studios: StudioManager, hub: MatchHub
             clearTimeout(r.hostLeftTimer);
             r.hostLeftTimer = null;
           }
+          // server restarted mid-show: pick the stream back up once the host is in the room
+          setTimeout(() => void r.resumeHostStream(socket.id), 1500);
         }
         data.studioId = r.state.id;
         data.role = req.role;
