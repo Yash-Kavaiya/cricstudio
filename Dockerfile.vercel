@@ -1,0 +1,18 @@
+# Vercel Container Runtime image — serves the web app, REST API, Socket.IO and FFmpeg relays from one origin.
+# (The 24/7 headless-Chromium cloud producer is left out: Vercel functions scale to zero when idle.)
+FROM node:24-bookworm-slim AS build
+WORKDIR /app
+COPY package.json package-lock.json tsconfig.base.json ./
+COPY packages ./packages
+COPY apps ./apps
+RUN npm ci --no-audit --no-fund
+RUN npm run build -w @cricstudio/web && npm run build -w @cricstudio/server && npm prune --omit=dev --no-audit --no-fund
+
+FROM node:24-bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg ca-certificates && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+# /tmp is the writable scratch area; set DATABASE_URL (Postgres) for studios that survive scale-down
+ENV NODE_ENV=production PORT=80 DATA_DIR=/tmp/cricstudio
+COPY --from=build /app /app
+EXPOSE 80
+CMD ["node", "apps/server/dist/index.js"]

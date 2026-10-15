@@ -192,6 +192,62 @@ export async function createPgRepo(url: string): Promise<Repo> {
   };
 }
 
+/** Redis store (e.g. Upstash on Vercel) — no SQL database needed; shared by every instance. */
+export async function createRedisRepo(url: string): Promise<Repo> {
+  const { default: Redis } = await import('ioredis');
+  const r = new Redis(url, { maxRetriesPerRequest: 3 });
+  const sKey = (id: string) => `cs:studio:${id}`;
+  const dKey = (studioId: string) => `cs:dests:${studioId}`;
+  const LIVE = 'cs:studios:live';
+  const getS = async (id: string) => {
+    const raw = await r.get(sKey(id));
+    return raw ? (JSON.parse(raw) as StudioRecord) : null;
+  };
+  const getD = async (id: string, studioId: string) => {
+    const raw = await r.hget(dKey(studioId), id);
+    return raw ? (JSON.parse(raw) as DestinationRecord) : null;
+  };
+  const syncLive = (s: StudioRecord) => (s.settings.includes('"wantLive":true') ? r.sadd(LIVE, s.id) : r.srem(LIVE, s.id));
+
+  return {
+    async createStudio(s) {
+      await r.set(sKey(s.id), JSON.stringify(s));
+      await syncLive(s);
+    },
+    getStudio: getS,
+    async listLiveStudios() {
+      return r.smembers(LIVE);
+    },
+    async updateStudio(id, patch) {
+      const cur = await getS(id);
+      if (!cur) return;
+      const s = { ...cur, ...patch };
+      await r.set(sKey(id), JSON.stringify(s));
+      await syncLive(s);
+    },
+    async listDestinations(studioId) {
+      const all = Object.values(await r.hgetall(dKey(studioId))).map((v) => JSON.parse(v) as DestinationRecord);
+      return all.sort((a, b) => a.createdAt - b.createdAt);
+    },
+    async addDestination(d) {
+      await r.hset(dKey(d.studioId), d.id, JSON.stringify(d));
+    },
+    async updateDestination(id, studioId, patch) {
+      const cur = await getD(id, studioId);
+      if (!cur) return;
+      await r.hset(dKey(studioId), id, JSON.stringify({ ...cur, ...patch }));
+    },
+    async deleteDestination(id, studioId) {
+      await r.hdel(dKey(studioId), id);
+    },
+    async close() {
+      r.disconnect();
+    },
+  };
+}
+
 export function createRepo(): Promise<Repo> {
-  return config.databaseUrl ? createPgRepo(config.databaseUrl) : createSqliteRepo();
+  if (config.databaseUrl) return createPgRepo(config.databaseUrl);
+  if (config.redisUrl) return createRedisRepo(config.redisUrl);
+  return createSqliteRepo();
 }

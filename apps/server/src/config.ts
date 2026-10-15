@@ -28,7 +28,8 @@ export const config = {
   webDist: resolve(REPO_ROOT, 'apps', 'web', 'dist'),
   demoDir: resolve(SERVER_ROOT, 'demo'),
   streamKeySecret: env.STREAM_KEY_SECRET ?? '',
-  redisUrl: env.REDIS_URL ?? '',
+  /** REDIS_URL, or KV_URL as injected by the Upstash integration on Vercel */
+  redisUrl: env.REDIS_URL || env.KV_URL || '',
   databaseUrl: env.DATABASE_URL ?? '',
   mediaMode: (env.MEDIA_MODE === 'livekit' ? 'livekit' : 'mesh') as 'mesh' | 'livekit',
   livekit: {

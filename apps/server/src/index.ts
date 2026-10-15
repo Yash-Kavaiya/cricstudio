@@ -57,7 +57,7 @@ async function main() {
   });
 
   await app.listen({ port: config.port, host: config.host });
-  app.log.info(`CricStudio server on :${config.port} · media=${config.mediaMode} · bus=${config.redisUrl ? 'redis' : 'memory'} · db=${config.databaseUrl ? 'postgres' : 'sqlite'}`);
+  app.log.info(`CricStudio server on :${config.port} · media=${config.mediaMode} · bus=${config.redisUrl ? 'redis' : 'memory'} · db=${config.databaseUrl ? 'postgres' : config.redisUrl ? 'redis' : 'sqlite'}`);
 
   // 24/7: resume every studio that was live when the process stopped (deploys, crashes, reboots)
   setTimeout(async () => {
