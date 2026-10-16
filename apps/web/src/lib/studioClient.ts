@@ -21,6 +21,7 @@ import { AudioEngine } from '../audio/engine';
 import { LiveCaptions, speechSupported } from '../captions/speech';
 import { SpeechSegmenter } from '../captions/segmenter';
 import { ProgramRecorder } from '../compositor/recorder';
+import { HwProgramRecorder, hardwareEncodingSupported } from '../compositor/hwRecorder';
 import { ProgramRenderer } from '../compositor/renderer';
 import { MeshRTC, type RemoteMedia } from '../rtc/mesh';
 import { VoiceProcessor, browserConstraintsChanged, normalizeVoiceFx, voiceIsolationSupported, type VoiceFx } from '../audio/voiceFx';
@@ -97,7 +98,15 @@ export class StudioClient {
   readonly renderer = new ProgramRenderer();
   audio: AudioEngine;
   private transport: MeshRTC | LiveKitRTC | null = null;
-  private recorder: ProgramRecorder | null = null;
+  private recorder: ProgramRecorder | HwProgramRecorder | null = null;
+  /** which encoder feeds the server: GPU (WebCodecs) or MediaRecorder; null until producing */
+  encoderKind: 'gpu' | 'mediarecorder' | null = null;
+  private hwFailed = false;
+
+  /** encoded output fps of the GPU encoder (null on MediaRecorder, which doesn't expose it) */
+  sampleEncoderFps(): number | null {
+    return this.recorder instanceof HwProgramRecorder ? this.recorder.sampleFps() : null;
+  }
   private producing = false;
   private joined = false;
   private ingestQueue: { kind: 'reset' | 'chunk'; buf?: ArrayBuffer; mime?: string }[] = [];
@@ -343,7 +352,8 @@ export class StudioClient {
   dispose() {
     if (this.matchesTimer) clearInterval(this.matchesTimer);
     if (this.heartbeat) clearInterval(this.heartbeat);
-    this.recorder?.stop();
+    if (this.recorder instanceof HwProgramRecorder) this.recorder.dispose();
+    else this.recorder?.stop();
     this.speechQueue = [];
     this.captions?.stop();
     this.segmenter?.stop();
@@ -747,15 +757,63 @@ export class StudioClient {
   startProducing() {
     if (this.opts.role === 'guest') return;
     this.producing = true;
-    if (!this.recorder) {
-      this.recorder = new ProgramRecorder(this.renderer.canvas, this.audio.programStream, {
-        reset: (mime) => this.sendIngest({ kind: 'reset', mime }),
-        chunk: (buf) => this.sendIngest({ kind: 'chunk', buf }),
-      });
+    if (this.recorder) {
+      // a fresh header is always safe after (re)connecting
+      this.recorder.start();
+      this.needFreshHeader = false;
+      return;
     }
-    // a fresh header is always safe after (re)connecting
-    this.recorder.start();
-    this.needFreshHeader = false;
+    const gen = ++this.recorderGen;
+    void this.pickEncoder().then((gpu) => {
+      if (!this.producing || this.recorder || gen !== this.recorderGen) return;
+      this.recorder = gpu ? this.gpuRecorder() : this.mediaRecorder();
+      this.encoderKind = gpu ? 'gpu' : 'mediarecorder';
+      this.recorder.start();
+      this.needFreshHeader = false;
+      this.notify();
+    });
+  }
+
+  private recorderGen = 0;
+
+  private get ingestSink() {
+    return {
+      reset: (mime: string) => this.sendIngest({ kind: 'reset', mime }),
+      chunk: (buf: ArrayBuffer) => this.sendIngest({ kind: 'chunk', buf }),
+    };
+  }
+
+  /** GPU encoding unless unsupported, previously failed, or turned off (localStorage cricstudio.encoder = "mediarecorder"). */
+  private async pickEncoder(): Promise<boolean> {
+    if (this.hwFailed) return false;
+    try {
+      if (localStorage.getItem('cricstudio.encoder')?.includes('mediarecorder')) return false;
+    } catch {
+      /* storage blocked */
+    }
+    return hardwareEncodingSupported();
+  }
+
+  private mediaRecorder() {
+    return new ProgramRecorder(this.renderer.canvas, this.audio.programStream, this.ingestSink);
+  }
+
+  private gpuRecorder() {
+    return new HwProgramRecorder(this.renderer.canvas, this.audio.programStream, this.ingestSink, (why) => {
+      // any GPU encoder problem: switch this session to MediaRecorder without stopping the show
+      console.warn('[encoder] GPU encoder failed, falling back to MediaRecorder:', why);
+      this.hwFailed = true;
+      const old = this.recorder;
+      if (old instanceof HwProgramRecorder) old.dispose();
+      this.recorder = null;
+      this.encoderKind = null;
+      if (this.producing) {
+        this.recorder = this.mediaRecorder();
+        this.encoderKind = 'mediarecorder';
+        this.recorder.start();
+      }
+      this.notify();
+    });
   }
 
   /** cloud producer liveness for the server watchdog (fps + JS heap) */
@@ -771,8 +829,11 @@ export class StudioClient {
 
   stopProducing() {
     this.producing = false;
-    this.recorder?.stop();
+    this.recorderGen++;
+    if (this.recorder instanceof HwProgramRecorder) this.recorder.dispose();
+    else this.recorder?.stop();
     this.recorder = null;
+    this.encoderKind = null;
     this.ingestQueue = [];
     this.queuedBytes = 0;
   }

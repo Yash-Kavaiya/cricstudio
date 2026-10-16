@@ -1,6 +1,7 @@
 // AI commentary: Gemini (Google AI Studio) writes the line, Gnani Timbre speaks it.
 // Both are optional — the commentator falls back to templates and free Edge voices.
 import type { CricketEvent, MatchDetail } from '@cricstudio/shared';
+import { speakable } from './tts';
 
 const LANG_NAMES: Record<string, string> = {
   'en-IN': 'Indian English (a little Hinglish flavour is fine)',
@@ -103,7 +104,7 @@ export async function gnaniSpeech(opts: { key: string; text: string; voice: stri
     method: 'POST',
     headers: { 'content-type': 'application/json', 'X-API-Key-ID': opts.key },
     body: JSON.stringify({
-      text: `${opts.excited ? '<excited> ' : ''}${opts.text}`,
+      text: `${opts.excited ? '<excited> ' : ''}${speakable(opts.text)}`,
       voice: opts.voice,
       model: 'timbre-v3.0',
       language: opts.language.startsWith('en') ? 'en-IN' : opts.language,

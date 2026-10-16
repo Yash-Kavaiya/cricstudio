@@ -13,7 +13,17 @@ export function workerTicker(fps: number, cb: () => void) {
   const src = `let t=setInterval(()=>postMessage(0),${Math.round(1000 / fps)});onmessage=e=>{if(e.data==='stop'){clearInterval(t);close()}}`;
   const url = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
   const w = new Worker(url);
-  w.onmessage = cb;
+  // after a main-thread stall the queued ticks arrive in a burst; drawing them all only produces
+  // frames nobody sees and steals CPU from the video encoder. A deadline schedule drops the burst
+  // but tolerates normal jitter (a tick up to half a frame early still runs).
+  const interval = 1000 / fps;
+  let next = 0;
+  w.onmessage = () => {
+    const now = performance.now();
+    if (now < next - interval * 0.5) return;
+    next = Math.max(next + interval, now + interval * 0.75);
+    cb();
+  };
   return () => {
     w.postMessage('stop');
     URL.revokeObjectURL(url);
@@ -54,6 +64,8 @@ export class ProgramRenderer {
   private frames = 0;
   private fpsWindow = performance.now();
   fps = 0;
+  /** average CPU time to draw one frame (ms); above ~25 ms the encoder starts dropping frames */
+  frameMs = 0;
   onSceneChange?: (scene: SceneId) => void;
   onOverlay?: (o: NonNullable<StudioState['overlay']>) => void;
 
@@ -207,5 +219,7 @@ export class ProgramRenderer {
       // never let a bad data shape kill the stream
       console.error('[renderer]', e);
     }
+    const spent = performance.now() - t0;
+    this.frameMs = this.frameMs ? this.frameMs * 0.95 + spent * 0.05 : spent;
   }
 }

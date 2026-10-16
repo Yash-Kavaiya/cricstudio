@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   AppBar,
@@ -42,6 +42,32 @@ import { api } from '../lib/api';
 import { prefs, studioStore } from '../lib/storage';
 import { StudioClient, type DeviceChoice } from '../lib/studioClient';
 import { useClient } from '../lib/useClient';
+import type { ProgramRenderer } from '../compositor/renderer';
+
+/** Real compositor fps and draw cost, so a struggling PC is visible before viewers notice. */
+function RenderStats({ renderer, encoder, sampleEncoderFps }: { renderer: ProgramRenderer; encoder: 'gpu' | 'mediarecorder' | null; sampleEncoderFps: () => number | null }) {
+  const [, tick] = useState(0);
+  const [encFps, setEncFps] = useState<number | null>(null);
+  useEffect(() => {
+    const t = setInterval(() => {
+      setEncFps(sampleEncoderFps());
+      tick((x) => x + 1);
+    }, 2000);
+    return () => clearInterval(t);
+  }, [sampleEncoderFps]);
+  const ms = renderer.frameMs;
+  const busy = renderer.fps > 0 && (renderer.fps < 26 || ms > 25);
+  return (
+    <Typography
+      variant="caption"
+      color={busy ? 'warning.main' : 'text.secondary'}
+      title="Frames drawn per second and average draw time per frame. Over ~25 ms means this PC is too busy — close other apps or tabs."
+      sx={{ display: { xs: 'none', sm: 'block' }, fontVariantNumeric: 'tabular-nums' }}
+    >
+      1920 × 1080 · {renderer.fps || '–'} fps · {ms ? ms.toFixed(1) : '–'} ms/frame{encoder ? (encoder === 'gpu' ? ` · GPU encoder${encFps !== null ? ` ${Math.round(encFps)} fps` : ''}` : ' · MediaRecorder') : ''}
+    </Typography>
+  );
+}
 
 function useLiveTimer(startedAt?: number) {
   const [, tick] = useState(0);
@@ -109,6 +135,7 @@ export function Studio() {
 
 function StudioRoom({ client: c, hostToken, programToken, onLeave }: { client: StudioClient; hostToken: string; programToken: string; onLeave: () => void }) {
   const client = useClient(c)!;
+  const sampleEncFps = useCallback(() => c.sampleEncoderFps(), [c]);
   const { mode, toggle } = useColorMode();
   const [tab, setTab] = useState<(typeof TABS)[number]['key']>('match');
   const [inviteOpen, setInviteOpen] = useState(false);
@@ -220,9 +247,7 @@ function StudioRoom({ client: c, hostToken, programToken, onLeave }: { client: S
             <Typography variant="subtitle2" noWrap sx={{ flex: 1 }}>
               {SCENES.find((s) => s.id === st.scene)?.name}
             </Typography>
-            <Typography variant="caption" color="text.secondary" sx={{ display: { xs: 'none', sm: 'block' } }}>
-              1920 × 1080 · 30 fps
-            </Typography>
+            <RenderStats renderer={client.renderer} encoder={client.encoderKind} sampleEncoderFps={sampleEncFps} />
           </Stack>
           <ProgramCanvas renderer={client.renderer} live={live} />
           <Box sx={{ bgcolor: 'background.paper', borderRadius: 2, border: 1, borderColor: 'divider', px: 1.5, pt: 1, pb: 1.5 }}>

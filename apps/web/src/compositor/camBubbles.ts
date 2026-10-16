@@ -10,7 +10,7 @@ const MARGIN = 36;
 const GAP = 22;
 
 /** Red leather ring with a stitched seam and a gloss highlight around a circular camera. */
-function cricketBallRing(ctx: CanvasRenderingContext2D, cx: number, cy: number, r: number, now: number) {
+function cricketBallRing(ctx: CanvasRenderingContext2D, cx: number, cy: number, r: number) {
   const ring = Math.max(8, r * 0.13);
   const mid = r + ring / 2;
 
@@ -34,7 +34,6 @@ function cricketBallRing(ctx: CanvasRenderingContext2D, cx: number, cy: number, 
 
   // two rows of slanted stitches either side of the groove; drifts slowly like a spinning ball
   const n = Math.max(24, Math.round((mid * Math.PI * 2) / (ring * 0.62)));
-  const spin = (now / 9000) % (Math.PI * 2);
   const len = ring * 0.26;
   ctx.lineCap = 'round';
   ctx.lineWidth = Math.max(1.2, ring * 0.1);
@@ -43,7 +42,7 @@ function cricketBallRing(ctx: CanvasRenderingContext2D, cx: number, cy: number, 
     const rr0 = mid + side * ring * 0.24;
     ctx.beginPath();
     for (let i = 0; i < n; i++) {
-      const a = spin + (i / n) * Math.PI * 2;
+      const a = (i / n) * Math.PI * 2;
       const ca = Math.cos(a);
       const sa = Math.sin(a);
       const tilt = side * 0.55; // stitches lean away from the seam
@@ -63,6 +62,52 @@ function cricketBallRing(ctx: CanvasRenderingContext2D, cx: number, cy: number, 
   ctx.lineWidth = ring * 0.32;
   ctx.strokeStyle = 'rgba(255,255,255,0.35)';
   ctx.stroke();
+}
+
+/**
+ * The leather ring, seam, gloss and drop shadow never change for a given size, so they are drawn
+ * once into a sprite. Per frame we only blit it — no shadowBlur or ~100 stitch strokes on the
+ * program canvas, which keeps CPU free for the H.264 encoder.
+ */
+type Sprite = { under: CanvasImageSource; ring: CanvasImageSource; pad: number };
+const sprites = new Map<number, Sprite>();
+function bubbleSprite(size: number) {
+  const key = Math.round(size);
+  let sp = sprites.get(key);
+  if (sp) return sp;
+  const r = key / 2;
+  const pad = Math.ceil(r * 0.13 + 48); // ring + shadow blur/offset
+  const dim = key + pad * 2;
+  const c = r + pad;
+  // shadow + dark base under the camera
+  const under = document.createElement('canvas');
+  under.width = under.height = dim;
+  const u = under.getContext('2d')!;
+  u.shadowColor = 'rgba(0,0,0,0.5)';
+  u.shadowBlur = 28;
+  u.shadowOffsetY = 10;
+  u.beginPath();
+  u.arc(c, c, r * 1.13, 0, Math.PI * 2);
+  u.fillStyle = '#1d2440';
+  u.fill();
+  // ring drawn over the camera
+  const ring = document.createElement('canvas');
+  ring.width = ring.height = dim;
+  cricketBallRing(ring.getContext('2d')!, c, c, r);
+  const made: Sprite = { under, ring, pad };
+  sp = made;
+  // immutable GPU-resident copies: blitting a bitmap avoids re-uploading the canvas every frame
+  if (typeof createImageBitmap === 'function') {
+    void Promise.all([createImageBitmap(under), createImageBitmap(ring)])
+      .then(([u2, r2]) => {
+        made.under = u2;
+        made.ring = r2;
+      })
+      .catch(() => undefined);
+  }
+  if (sprites.size > 8) sprites.delete(sprites.keys().next().value!);
+  sprites.set(key, sp);
+  return sp;
 }
 
 function bubbleRects(n: number, d: number, corner: CamBubbleCorner, bottomInset: number) {
@@ -107,16 +152,8 @@ export function camBubbles(rc: RenderCtx, p: number, tickerOn: boolean) {
     ctx.rotate((1 - local) * (right ? 1.2 : -1.2)); // rolls in like a ball
     ctx.translate(-cx, -cy);
 
-    // shadow + base disc
-    ctx.save();
-    ctx.shadowColor = 'rgba(0,0,0,0.5)';
-    ctx.shadowBlur = 28;
-    ctx.shadowOffsetY = 10;
-    ctx.beginPath();
-    ctx.arc(cx, cy, r * 1.13, 0, Math.PI * 2);
-    ctx.fillStyle = '#1d2440';
-    ctx.fill();
-    ctx.restore();
+    const sp = bubbleSprite(size);
+    ctx.drawImage(sp.under, x - sp.pad, y - sp.pad);
 
     const src = rc.videos.get(person.id);
     if (!person.camOff && isVideoReady(src?.cam)) drawImageCover(ctx, src!.cam!, x, y, size, size, r, !!src!.mirror);
@@ -127,7 +164,12 @@ export function camBubbles(rc: RenderCtx, p: number, tickerOn: boolean) {
       ctx.fill();
       avatar(ctx, person.name, cx, cy, r * 0.55);
     }
-    cricketBallRing(ctx, cx, cy, r, now);
+    // ring turns slowly like a spinning ball (rotating a cached sprite is cheap)
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate((now / 9000) % (Math.PI * 2));
+    ctx.drawImage(sp.ring, -r - sp.pad, -r - sp.pad);
+    ctx.restore();
 
     // name pill under the ball
     const fs = nameH * 0.52;

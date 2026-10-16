@@ -32,7 +32,9 @@ export class ProgramRecorder {
     private readonly sink: RecorderSink,
     private readonly videoBps = 6_000_000,
   ) {
-    const v = canvas.captureStream(30);
+    // no rate cap: captureStream(30) drops any frame painted slightly sooner than 33.3 ms after the
+    // last one, which silently cost ~15% of frames with our 33 ms ticker; the renderer paces at 30 fps
+    const v = canvas.captureStream();
     this.stream = new MediaStream([...v.getVideoTracks(), ...(audio?.getAudioTracks() ?? [])]);
   }
 

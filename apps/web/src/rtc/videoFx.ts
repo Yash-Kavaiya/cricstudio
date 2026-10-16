@@ -218,7 +218,7 @@ export class VideoProcessor {
     this.video.playsInline = true;
     this.video.srcObject = new MediaStream(src.getVideoTracks());
     void this.video.play().catch(() => undefined);
-    this.track = this.out.captureStream(30).getVideoTracks()[0];
+    this.track = this.out.captureStream().getVideoTracks()[0]; // paced by the 30 fps ticker; a cap would drop early frames
     this.stopTicker = workerTicker(30, () => this.frame());
     this.prepare();
   }

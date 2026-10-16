@@ -30,13 +30,40 @@ export function ballsToOvers(balls: number, bpo = 6): number {
   return Math.floor(balls / bpo) + (balls % bpo) / 10;
 }
 
+const NAMED_ENTITIES: Record<string, string> = {
+  amp: '&',
+  quot: '"',
+  apos: "'",
+  lt: '<',
+  gt: '>',
+  nbsp: ' ',
+  dagger: '†', // ESPN marks the wicketkeeper: "c †Samson b Singh"
+  Dagger: '‡',
+  ndash: '–',
+  mdash: '—',
+  hellip: '…',
+  lsquo: '‘',
+  rsquo: '’',
+  ldquo: '“',
+  rdquo: '”',
+  bull: '•',
+  middot: '·',
+  times: '×',
+};
+
+/** Decode HTML entities (named, decimal and hex) that ESPN leaves in commentary and dismissal text. */
+export function decodeEntities(s: string): string {
+  return s.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (m, e: string) => {
+    if (e[0] === '#') {
+      const code = e[1] === 'x' || e[1] === 'X' ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10);
+      return Number.isFinite(code) && code > 0 && code < 0x110000 ? String.fromCodePoint(code) : m;
+    }
+    return NAMED_ENTITIES[e] ?? m;
+  });
+}
+
 export function stripHtml(s: string): string {
-  return s
-    .replace(/<br\s*\/?>/gi, ' ')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&amp;/g, '&')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
+  return decodeEntities(s.replace(/<br\s*\/?>/gi, ' ').replace(/<[^>]+>/g, ''))
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -197,7 +224,7 @@ export function normalizeBall(item: any): Ball {
           maidens: num(item.bowler.maidens),
         }
       : undefined,
-    dismissalText: item.dismissal?.dismissal ? str(item.dismissal.text) : undefined,
+    dismissalText: item.dismissal?.dismissal ? stripHtml(str(item.dismissal.text)) : undefined,
     dismissalType: item.dismissal?.dismissal ? str(item.dismissal.type) : undefined,
     ts: num(item.bbbTimestamp, Date.parse(str(item.date)) || 0),
   };
@@ -250,7 +277,7 @@ function battingFor(roster: any[], period: number, dismissals: Map<string, strin
     const batting = ls.linescores?.[0]?.batting;
     if (num(s.batted) !== 1 && !batting?.active) continue;
     const id = str(p.athlete?.id);
-    const code = str(batting?.outDetails?.shortText ?? s.dismissalCard, 'not out');
+    const code = stripHtml(str(batting?.outDetails?.shortText ?? s.dismissalCard, 'not out'));
     const dismissal = num(s.outs) === 0 ? code : dismissals.get(id) ?? DISMISSAL_CODES[code] ?? code;
     lines.push({
       id: str(p.athlete?.id),

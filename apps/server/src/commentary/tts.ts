@@ -7,6 +7,22 @@ import { config } from '../config';
  * Free neural text-to-speech (Microsoft Edge "Read aloud" voices) with a bounded LRU cache.
  * Returns MP3 bytes that the program mixer decodes and plays into the broadcast.
  */
+/**
+ * Edge TTS wraps the text in SSML without escaping it, so "c & b", "<" or a leftover HTML entity
+ * like "&dagger;" made the whole request fail (503) and the line was never spoken.
+ */
+export function speakable(s: string): string {
+  return s
+    .replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, ' ') // undecoded entities
+    .replace(/[†‡*]/g, '') // scorecard marks (keeper, captain, not out)
+    .replace(/\bc & b\b/gi, 'caught and bowled')
+    .replace(/&/g, ' and ')
+    .replace(/</g, ' ')
+    .replace(/>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 export class TtsService {
   private cache = new Map<string, Buffer>();
   private cacheBytes = 0;
@@ -36,7 +52,7 @@ export class TtsService {
   }
 
   async synth(textIn: string, voiceIn?: string, rate = '+0%', pitch = '+0Hz'): Promise<Buffer> {
-    const text = textIn.replace(/\s+/g, ' ').trim().slice(0, 400);
+    const text = speakable(textIn).slice(0, 400);
     const voice = VOICES.some((v) => v.id === voiceIn) || Object.values(EDGE_LANG_VOICES).includes(voiceIn ?? '') ? voiceIn! : config.ttsVoice;
     const key = createHash('sha1').update(`${voice}|${rate}|${pitch}|${text}`).digest('hex');
     const hit = this.cache.get(key);
