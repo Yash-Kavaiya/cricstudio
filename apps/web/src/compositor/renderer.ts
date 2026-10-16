@@ -3,6 +3,7 @@ import { H, W, clamp, type RenderCtx, type VideoSource } from './draw';
 import { Celebration3D } from './fx3d';
 import { brandBug, captions, eventOverlay, scorebug, ticker } from './overlays';
 import { NO_TICKER_SCENES, SCENE_DRAW, SCOREBUG_SCENES } from './scenes';
+import { CAMERA_SCENES, camBubbles } from './camBubbles';
 import { TRANSITION_MS, drawTransition } from './transitions';
 
 const MAX_IMAGES = 160;
@@ -40,6 +41,7 @@ export class ProgramRenderer {
   private matches: MatchListItem[] = [];
   private caption: CaptionLine | null = null;
   readonly videos = new Map<string, VideoSource>();
+  private bubblesSince: number | null = null;
   private images = new Map<string, HTMLImageElement | 'loading' | 'error'>();
   private scene: SceneId | null = null;
   private sceneStart = 0;
@@ -191,7 +193,13 @@ export class ProgramRenderer {
       }
       const rc = this.rc(ctx, this.scene, age);
       if (s.brand.showScorebug && SCOREBUG_SCENES.includes(this.scene)) scorebug(rc, clamp((age - 300) / 500));
-      if (!NO_TICKER_SCENES.includes(this.scene)) ticker(rc, clamp((age - 200) / 500));
+      const tickerOn = s.brand.showTicker && !NO_TICKER_SCENES.includes(this.scene);
+      if (tickerOn) ticker(rc, clamp((age - 200) / 500));
+      // bubbles persist across data scenes; they only roll in when they first appear
+      const bubblesOn = !!s.brand.camBubbles && !CAMERA_SCENES.includes(this.scene) && rc.stage.length > 0;
+      if (!bubblesOn) this.bubblesSince = null;
+      else if (this.bubblesSince === null) this.bubblesSince = now;
+      if (this.bubblesSince !== null) camBubbles(rc, clamp((now - this.bubblesSince - 250) / 700), tickerOn);
       brandBug(rc);
       captions(rc);
       eventOverlay(rc);

@@ -319,12 +319,19 @@ export interface Branding {
   /** use WebGL 3D celebrations (falls back to 2D automatically) */
   fx3d: boolean;
   pollQuestion: string;
+  /** round "cricket ball" camera bubbles for the host & guests on every non-camera scene */
+  camBubbles?: boolean;
+  camBubbleCorner?: CamBubbleCorner;
+  /** bubble diameter in program pixels (1920×1080) */
+  camBubbleSize?: number;
 }
+
+export type CamBubbleCorner = 'br' | 'bl' | 'tr' | 'tl';
 
 export interface AutopilotSettings {
   /** run the show without a host: rotate scenes, music, AI commentary */
   enabled: boolean;
-  sceneSeconds: number; // 3..30
+  sceneSeconds: number; // 5..600, default 45
   /** share of airtime for the Score scenes (live score, ball-by-ball, batting, bowling); 0..1, default 0.7 */
   scoreShare?: number;
   includeCameras: boolean;

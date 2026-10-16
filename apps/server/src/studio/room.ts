@@ -54,12 +54,15 @@ export function defaultState(rec: StudioRecord): StudioState {
       transition: 'mixed',
       fx3d: true,
       pollQuestion: 'Who wins this match? Vote in the comments!',
+      camBubbles: false,
+      camBubbleCorner: 'br',
+      camBubbleSize: 220,
     },
     countdownTo: null,
     spotlightId: null,
     autopilot: {
       enabled: false,
-      sceneSeconds: 8,
+      sceneSeconds: 45,
       scoreShare: 0.7,
       includeCameras: false,
       commentator: true,
@@ -129,7 +132,8 @@ export class StudioRoom {
       rules: { ...base.rules, ...(saved.rules ?? {}) },
       brand: { ...base.brand, ...(saved.brand ?? {}) },
       music: { ...base.music, ...(saved.music ?? {}), playing: false },
-      autopilot: { ...base.autopilot, ...(saved.autopilot ?? {}) },
+      // studios saved with the old 8 s default move to the new 45 s default
+      autopilot: { ...base.autopilot, ...(saved.autopilot ?? {}), ...(saved.autopilot?.sceneSeconds === 8 ? { sceneSeconds: 45 } : {}) },
       stt: { ...base.stt, ...(saved.stt ?? {}) },
     };
     // speech-to-text API keys: encrypted at rest, kept out of the broadcast state

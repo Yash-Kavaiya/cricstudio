@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { Alert, Box, Button, ButtonGroup, ButtonBase, Divider, FormControlLabel, MenuItem, Stack, Switch, TextField, Typography } from '@mui/material';
-import { BACKGROUNDS, TRANSITIONS } from '@cricstudio/shared';
+import { Alert, Box, Button, ButtonGroup, ButtonBase, Divider, FormControlLabel, MenuItem, Slider, Stack, Switch, TextField, ToggleButton, ToggleButtonGroup, Typography } from '@mui/material';
+import { BACKGROUNDS, TRANSITIONS, type CamBubbleCorner } from '@cricstudio/shared';
 import { CaptionsSettings } from './CaptionsSettings';
 import type { StudioClient } from '../../lib/studioClient';
 import { Icon } from '../Icon';
@@ -80,6 +80,59 @@ export function BrandPanel({ client, hostToken }: { client: StudioClient; hostTo
       <FormControlLabel control={<Switch checked={b.fx3d} onChange={(e) => patchBrand({ fx3d: e.target.checked })} />} label="3D celebrations (four, six, wicket, milestones)" />
       <TextField label="Fan poll question" value={b.pollQuestion} onChange={(e) => patchBrand({ pollQuestion: e.target.value })} />
       <FormControlLabel control={<Switch checked={b.showTicker} onChange={(e) => patchBrand({ showTicker: e.target.checked })} />} label="Bottom ticker (other live scores)" />
+      <Divider />
+      <Box>
+        <FormControlLabel
+          control={<Switch checked={!!b.camBubbles} onChange={(e) => patchBrand({ camBubbles: e.target.checked })} />}
+          label={
+            <Box>
+              <Typography variant="body2">Round camera bubbles on every scene</Typography>
+              <Typography variant="caption" color="text.secondary">
+                Host & guests on stage appear as cricket-ball circles over scoreboards, stats and analysis (camera scenes keep their full-size tiles).
+              </Typography>
+            </Box>
+          }
+          sx={{ alignItems: 'flex-start', mx: 0 }}
+        />
+        {b.camBubbles && (
+          <Stack spacing={1} sx={{ mt: 1, pl: 1 }}>
+            <Stack direction="row" alignItems="center" spacing={1.5}>
+              <Typography variant="caption" color="text.secondary" sx={{ width: 56 }}>
+                Corner
+              </Typography>
+              <ToggleButtonGroup
+                size="small"
+                exclusive
+                value={b.camBubbleCorner ?? 'br'}
+                onChange={(_, v: CamBubbleCorner | null) => v && patchBrand({ camBubbleCorner: v })}
+              >
+                <ToggleButton value="tl">Top left</ToggleButton>
+                <ToggleButton value="tr">Top right</ToggleButton>
+                <ToggleButton value="bl">Bottom left</ToggleButton>
+                <ToggleButton value="br">Bottom right</ToggleButton>
+              </ToggleButtonGroup>
+            </Stack>
+            <Stack direction="row" alignItems="center" spacing={1.5}>
+              <Typography variant="caption" color="text.secondary" sx={{ width: 56 }}>
+                Size
+              </Typography>
+              <Slider
+                size="small"
+                min={120}
+                max={400}
+                step={10}
+                defaultValue={b.camBubbleSize ?? 220}
+                valueLabelDisplay="auto"
+                valueLabelFormat={(v) => `${v}px`}
+                onChangeCommitted={(_, v) => patchBrand({ camBubbleSize: v as number })}
+              />
+            </Stack>
+            {!client.state?.participants.some((p) => p.onStage && p.role !== 'program') && (
+              <Alert severity="info">Add the host or a guest to the stage to see the bubbles.</Alert>
+            )}
+          </Stack>
+        )}
+      </Box>
       <Divider />
       <CaptionsSettings client={client} hostToken={hostToken} />
       <Divider />

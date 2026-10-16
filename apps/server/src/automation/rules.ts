@@ -303,7 +303,7 @@ export class AutomationEngine {
 
     if (st.autopilot.enabled) {
       // autopilot: rotate every N seconds; break/result hold longer while they make sense
-      const hold = st.scene === 'result' || st.scene === 'break' ? Math.max(30, st.autopilot.sceneSeconds * 4) : st.autopilot.sceneSeconds;
+      const hold = st.scene === 'result' || st.scene === 'break' ? Math.max(30, st.autopilot.sceneSeconds * 2) : st.autopilot.sceneSeconds;
       const busy = !!st.sceneUntil || (st.overlay && (st.overlay.priority ?? 0) >= 4);
       if (!busy && now - this.lastSceneChange > hold * 1000) {
         const m = this.host.match?.();

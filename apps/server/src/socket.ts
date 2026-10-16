@@ -42,7 +42,7 @@ const clampNum = (v: unknown, lo: number, hi: number, d: number) => {
 function sanitizeAutopilot(cur: AutopilotSettings, p: Partial<AutopilotSettings>): AutopilotSettings {
   return {
     enabled: typeof p.enabled === 'boolean' ? p.enabled : cur.enabled,
-    sceneSeconds: p.sceneSeconds !== undefined ? clampNum(p.sceneSeconds, 3, 30, cur.sceneSeconds) : cur.sceneSeconds,
+    sceneSeconds: p.sceneSeconds !== undefined ? Math.round(clampNum(p.sceneSeconds, 5, 600, cur.sceneSeconds)) : cur.sceneSeconds,
     scoreShare: p.scoreShare !== undefined ? clampNum(p.scoreShare, 0, 1, cur.scoreShare ?? 0.7) : (cur.scoreShare ?? 0.7),
     includeCameras: typeof p.includeCameras === 'boolean' ? p.includeCameras : cur.includeCameras,
     commentator: typeof p.commentator === 'boolean' ? p.commentator : cur.commentator,
@@ -187,6 +187,9 @@ export function registerSocket(io: Server, studios: StudioManager, hub: MatchHub
           const b = { ...s.brand, ...patch.brand };
           if (!BACKGROUNDS.some((x) => x.id === b.background)) b.background = s.brand.background;
           if (b.transition !== 'mixed' && !TRANSITIONS.some((t) => t.id === b.transition)) b.transition = s.brand.transition;
+          b.camBubbles = !!b.camBubbles;
+          if (!['br', 'bl', 'tr', 'tl'].includes(b.camBubbleCorner as string)) b.camBubbleCorner = s.brand.camBubbleCorner ?? 'br';
+          b.camBubbleSize = Math.round(clampNum(b.camBubbleSize, 120, 400, s.brand.camBubbleSize ?? 220));
           s.brand = b;
         }
         if (patch.autopilot) {

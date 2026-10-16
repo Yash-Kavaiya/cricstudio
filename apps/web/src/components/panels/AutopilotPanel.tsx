@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Alert, Box, Button, Chip, Divider, FormControlLabel, Slider, Stack, Switch, TextField, Typography } from '@mui/material';
+import { useEffect, useState } from 'react';
+import { Alert, Box, Button, Chip, Divider, FormControlLabel, InputAdornment, Slider, Stack, Switch, TextField, Typography } from '@mui/material';
 import type { AutopilotSettings } from '@cricstudio/shared';
 import type { StudioClient } from '../../lib/studioClient';
 import { Icon } from '../Icon';
@@ -30,24 +30,7 @@ export function AutopilotPanel({ client, hostToken, onGoCloud, hasDestinations }
         </Stack>
       </Box>
 
-      <Box>
-        <Typography variant="subtitle2">Scene duration · {ap.sceneSeconds}s</Typography>
-        <Slider
-          min={3}
-          max={30}
-          step={1}
-          marks={[
-            { value: 5, label: '5s' },
-            { value: 10, label: '10s' },
-            { value: 20, label: '20s' },
-          ]}
-          defaultValue={ap.sceneSeconds}
-          onChangeCommitted={(_, v) => patch({ sceneSeconds: v as number })}
-        />
-        <Typography variant="caption" color="text.secondary">
-          Each data scene stays on air this long, with a different transition every cut. Wickets, boundaries and milestones still interrupt instantly.
-        </Typography>
-      </Box>
+      <SceneDuration seconds={ap.sceneSeconds} onChange={(v) => patch({ sceneSeconds: v })} />
 
       <Box>
         <Typography variant="subtitle2">Score focus · {Math.round((ap.scoreShare ?? 0.7) * 100)}% score / {100 - Math.round((ap.scoreShare ?? 0.7) * 100)}% other</Typography>
@@ -76,6 +59,18 @@ export function AutopilotPanel({ client, hostToken, onGoCloud, hasDestinations }
             <Typography variant="body2">Include host & guest camera scenes</Typography>
             <Typography variant="caption" color="text.secondary">
               Off = 100% scoreboard show (no host camera). On = cameras join the rotation when someone is on stage.
+            </Typography>
+          </Box>
+        }
+        sx={{ alignItems: 'flex-start', mx: 0 }}
+      />
+      <FormControlLabel
+        control={<Switch checked={!!st.brand.camBubbles} onChange={(e) => void client.patch({ brand: { ...st.brand, camBubbles: e.target.checked } })} />}
+        label={
+          <Box>
+            <Typography variant="body2">Round camera bubbles on all scenes</Typography>
+            <Typography variant="caption" color="text.secondary">
+              Keeps the host & guests on screen as cricket-ball circles over every scoreboard and stats scene. Corner and size are in the Brand tab.
             </Typography>
           </Box>
         }
@@ -165,5 +160,74 @@ export function AutopilotPanel({ client, hostToken, onGoCloud, hasDestinations }
         )}
       </Box>
     </Stack>
+  );
+}
+
+const MIN_SCENE_S = 5;
+const MAX_SCENE_S = 600;
+const SCENE_PRESETS = [15, 30, 45, 60, 90, 120];
+
+/** How long each Auto Live scene stays on air: slider for quick picks, a box for exact seconds. */
+function SceneDuration({ seconds, onChange }: { seconds: number; onChange: (v: number) => void }) {
+  const [draft, setDraft] = useState(String(seconds));
+  const [slider, setSlider] = useState(seconds);
+  useEffect(() => {
+    setDraft(String(seconds));
+    setSlider(seconds);
+  }, [seconds]);
+  const n = Number(draft);
+  const valid = draft.trim() !== '' && Number.isInteger(n) && n >= MIN_SCENE_S && n <= MAX_SCENE_S;
+  const commit = () => {
+    if (valid && n !== seconds) onChange(n);
+    else if (!valid) setDraft(String(seconds));
+  };
+  const fmt = (v: number) => (v >= 60 && v % 60 === 0 ? `${v / 60} min` : v > 60 ? `${Math.floor(v / 60)} min ${v % 60}s` : `${v}s`);
+
+  return (
+    <Box>
+      <Stack direction="row" alignItems="center" spacing={1.5}>
+        <Typography variant="subtitle2" sx={{ flex: 1 }}>
+          Scene duration · {fmt(seconds)}
+        </Typography>
+        <TextField
+          size="small"
+          type="number"
+          value={draft}
+          error={!valid}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+          }}
+          slotProps={{
+            htmlInput: { min: MIN_SCENE_S, max: MAX_SCENE_S, step: 1, 'aria-label': 'Scene duration in seconds' },
+            input: { endAdornment: <InputAdornment position="end">sec</InputAdornment> },
+          }}
+          sx={{ width: 120 }}
+        />
+      </Stack>
+      <Slider
+        min={10}
+        max={180}
+        step={5}
+        value={Math.min(180, Math.max(10, slider))}
+        marks={[
+          { value: 15, label: '15s' },
+          { value: 45, label: '45s' },
+          { value: 90, label: '90s' },
+          { value: 180, label: '3m' },
+        ]}
+        onChange={(_, v) => setSlider(v as number)}
+        onChangeCommitted={(_, v) => onChange(v as number)}
+      />
+      <Stack direction="row" spacing={0.75} sx={{ mb: 0.75, flexWrap: 'wrap', rowGap: 0.75 }}>
+        {SCENE_PRESETS.map((v) => (
+          <Chip key={v} size="small" label={fmt(v)} color={v === seconds ? 'primary' : 'default'} variant={v === seconds ? 'filled' : 'outlined'} onClick={() => onChange(v)} />
+        ))}
+      </Stack>
+      <Typography variant="caption" color="text.secondary">
+        Each scene stays on air this long ({MIN_SCENE_S}–{MAX_SCENE_S} seconds; type any value in the box). Wickets, boundaries and milestones still interrupt instantly.
+      </Typography>
+    </Box>
   );
 }
