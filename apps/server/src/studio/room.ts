@@ -5,6 +5,7 @@ import { EDGE_LANG_VOICES, GNANI_VOICES, type LiveStatus, type AiCommentaryStatu
 import { eventFacts, geminiCommentary, gnaniSpeech, matchFacts } from '../commentary/ai';
 import { AutomationEngine } from '../automation/rules';
 import { Commentator } from '../commentary/commentator';
+import { translateLine } from '../commentary/translate';
 import { config } from '../config';
 import { DEMO_KEY } from '../espn/demo';
 import type { MatchHub } from '../espn/hub';
@@ -220,14 +221,42 @@ export class StudioRoom {
     const key = best ? `${best.leagueId}:${best.id}` : DEMO_KEY;
     if (key !== this.state.matchKey) {
       this.setMatch(key);
-      this.speakText(best ? `We're heading over to ${best.name}. ${best.statusText}.` : 'No live matches right now, so here is a classic replay.');
+      const text = best ? `We're heading over to ${best.name}. ${best.statusText}.` : 'No live matches right now, so here is a classic replay.';
+      void this.localize(text).then((l) => this.speakText(l.text, 2, l.lang));
     }
   }
 
   /* ---------------- commentary ---------------- */
 
+  /**
+   * Language the commentary is actually spoken in. Edge has no Punjabi voice, so Punjabi is
+   * commentated in Hindi unless Gnani (which speaks Punjabi) is doing the voice.
+   */
+  private spokenLang(): string {
+    const ap = this.state.autopilot;
+    const lang = ap.commentaryLanguage ?? 'en-IN';
+    if (lang.startsWith('en') || EDGE_LANG_VOICES[lang]) return lang;
+    const gnani = ap.voiceEngine === 'gnani' && !!this.sttKey('gnani') && Date.now() >= this.gnaniDownUntil;
+    return gnani ? lang : 'hi-IN';
+  }
+
+  /** An English template/system line in the commentary language (free translation; English if it fails). */
+  private async localize(text: string): Promise<{ text: string; lang: string }> {
+    const lang = this.spokenLang();
+    if (lang.startsWith('en')) return { text, lang };
+    const out = await translateLine(text, lang);
+    return out ? { text: out, lang } : { text, lang: 'en-IN' };
+  }
+
+  /** Gemini rewrite of a commentary moment, or the template line translated into the commentary language. */
+  private async writeLine(ev: CricketEvent | null, fallback: string, recent: string[]): Promise<{ text: string; ai: boolean; lang: string }> {
+    const r = await this.writeAi(ev, fallback, recent);
+    if (r.ai) return { ...r, lang: this.spokenLang() };
+    return { ...(await this.localize(fallback)), ai: false };
+  }
+
   /** Gemini rewrite of a commentary moment; resolves to the template line whenever AI is off or failing. */
-  private async writeLine(ev: CricketEvent | null, fallback: string, recent: string[]): Promise<{ text: string; ai: boolean }> {
+  private async writeAi(ev: CricketEvent | null, fallback: string, recent: string[]): Promise<{ text: string; ai: boolean }> {
     const ap = this.state.autopilot;
     if (ap.writer !== 'gemini') return { text: fallback, ai: false };
     if (Date.now() < this.geminiDownUntil) return { text: fallback, ai: false }; // cooling off after a failure
@@ -240,7 +269,7 @@ export class StudioRoom {
       const text = await geminiCommentary({
         key,
         model: this.state.stt.geminiModel,
-        language: ap.commentaryLanguage ?? 'en-IN',
+        language: this.spokenLang(),
         facts: matchFacts(this.latestMatch),
         event: eventFacts(ev),
         fallback,
@@ -272,8 +301,8 @@ export class StudioRoom {
 
   private speak(lineIn: CommentaryLine) {
     const ap = this.state.autopilot;
-    // AI lines are written in the chosen language; templates and system lines are English
-    const lang = lineIn.ai ? (ap.commentaryLanguage ?? 'en-IN') : (lineIn.lang ?? 'en-IN');
+    // commentator lines carry the language they were written/translated in; anything else is English
+    const lang = lineIn.lang ?? (lineIn.ai ? this.spokenLang() : 'en-IN');
     const edgeVoice = lang.startsWith('en') ? ap.voice : (EDGE_LANG_VOICES[lang] ?? ap.voice);
     const gnani = ap.voiceEngine === 'gnani' && !!this.sttKey('gnani') && Date.now() >= this.gnaniDownUntil;
     if (ap.voiceEngine === 'gnani' && !gnani) this.setAiStatus({ voice: 'fallback', error: 'Gnani voice selected but no Gnani key is saved' });
@@ -319,27 +348,30 @@ export class StudioRoom {
   }
 
   /** Check the AI commentary setup end-to-end with a sample line. */
-  async testCommentary(): Promise<{ text: string; ai: boolean; writerError?: string; voiceOk?: boolean; voiceError?: string; audio?: Buffer }> {
+  async testCommentary(): Promise<{ text: string; ai: boolean; lang?: string; writerError?: string; voiceOk?: boolean; voiceError?: string; audio?: Buffer }> {
     const ap = this.state.autopilot;
     const fallback = 'What a shot! That races away to the boundary for four.';
-    const out: { text: string; ai: boolean; writerError?: string; voiceOk?: boolean; voiceError?: string; audio?: Buffer } = { text: fallback, ai: false };
+    const out: { text: string; ai: boolean; lang?: string; writerError?: string; voiceOk?: boolean; voiceError?: string; audio?: Buffer } = { text: fallback, ai: false };
     if (ap.writer === 'gemini') {
       const key = this.sttKey('gemini');
       if (!key) out.writerError = 'No Google AI Studio key saved';
       else
         try {
-          out.text = await geminiCommentary({ key, model: this.state.stt.geminiModel, language: ap.commentaryLanguage ?? 'en-IN', facts: matchFacts(this.latestMatch), event: 'A cracking boundary just now.', fallback, recent: [] });
+          out.text = await geminiCommentary({ key, model: this.state.stt.geminiModel, language: this.spokenLang(), facts: matchFacts(this.latestMatch), event: 'A cracking boundary just now.', fallback, recent: [] });
           out.ai = true;
         } catch (e) {
           out.writerError = (e as Error).message;
         }
     }
+    let lang = out.ai ? this.spokenLang() : 'en-IN';
+    if (!out.ai) ({ text: out.text, lang } = await this.localize(out.text));
+    out.lang = lang;
     if (ap.voiceEngine === 'gnani') {
       const key = this.sttKey('gnani');
       if (!key) out.voiceError = 'No Gnani key saved';
       else
         try {
-          out.audio = await gnaniSpeech({ key, text: out.text, voice: ap.gnaniVoice ?? 'Shubham', language: out.ai ? (ap.commentaryLanguage ?? 'en-IN') : 'en-IN', excited: true });
+          out.audio = await gnaniSpeech({ key, text: out.text, voice: ap.gnaniVoice ?? 'Shubham', language: lang, excited: true });
           out.voiceOk = true;
         } catch (e) {
           out.voiceError = (e as Error).message;

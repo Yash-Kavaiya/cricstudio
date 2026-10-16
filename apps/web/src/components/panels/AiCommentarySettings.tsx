@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Alert, Box, Button, CircularProgress, MenuItem, Stack, TextField, ToggleButton, ToggleButtonGroup, Typography } from '@mui/material';
-import { GNANI_VOICES, STT_LANGUAGES, VOICES, type AutopilotSettings } from '@cricstudio/shared';
+import { EDGE_LANG_VOICES, GNANI_VOICES, STT_LANGUAGES, VOICES, type AutopilotSettings } from '@cricstudio/shared';
 import type { StudioClient } from '../../lib/studioClient';
 import { Icon } from '../Icon';
 import { ApiKeyField } from './ApiKeyField';
@@ -65,7 +65,12 @@ export function AiCommentarySettings({ client, hostToken }: { client: StudioClie
         </TextField>
         {!lang.startsWith('en') && writer === 'templates' && (
           <Typography variant="caption" color="text.secondary">
-            Built-in templates are English — choose Gemini to commentate in this language.
+            Template lines are translated automatically (free) and spoken in a native voice. Gemini writes them natively for a more natural feel.
+          </Typography>
+        )}
+        {!lang.startsWith('en') && !EDGE_LANG_VOICES[lang] && engine !== 'gnani' && (
+          <Typography variant="caption" color="warning.main">
+            Edge has no voice for this language, so the commentary is spoken in Hindi. Choose the Gnani voice to hear it in this language.
           </Typography>
         )}
 

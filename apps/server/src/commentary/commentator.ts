@@ -131,7 +131,7 @@ export interface CommentatorHost {
   poll(): string;
   emit(line: CommentaryLine): void;
   /** optional AI writer (Gemini): rewrites the template line for this moment; must resolve to the fallback on failure */
-  write?(event: CricketEvent | null, fallback: string, recent: string[]): Promise<{ text: string; ai: boolean }>;
+  write?(event: CricketEvent | null, fallback: string, recent: string[]): Promise<{ text: string; ai: boolean; lang?: string }>;
 }
 
 export class Commentator {
@@ -154,14 +154,14 @@ export class Commentator {
     this.remember(text);
     this.lastSpoke = Date.now();
     const ts = Date.now();
-    const out = (t: string, ai: boolean) => {
+    const out = (t: string, ai: boolean, lang?: string) => {
       if (ai) this.remember(t);
-      this.host.emit({ id: `c${++this.seq}-${ts}`, text: t, voice: this.host.voice(), priority, ts, ai });
+      this.host.emit({ id: `c${++this.seq}-${ts}`, text: t, voice: this.host.voice(), priority, ts, ai, lang });
     };
     if (!this.host.write) return out(text, false);
     void this.host
       .write(event, text, this.recent)
-      .then((r) => out(r.text || text, r.ai))
+      .then((r) => (r.text ? out(r.text, r.ai, r.lang) : out(text, false)))
       .catch(() => out(text, false));
   }
 
