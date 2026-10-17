@@ -1,4 +1,4 @@
-import type { CommentaryLine, CricketEvent, MatchDetail, MatchListItem } from '@cricstudio/shared';
+import { countdownTarget, type CommentaryLine, type CricketEvent, type MatchDetail } from '@cricstudio/shared';
 
 /* Template-driven, context-aware commentary that sounds like a person, not a ticker. */
 
@@ -46,7 +46,80 @@ const say = {
   matchEnd: ["And that's the match! {summary}. What a game of cricket that was!", 'It is all over! {summary}. Thanks for watching with us.'],
 };
 
-const chatterTemplates: ((d: MatchDetail, extra: { matches: MatchListItem[]; poll: string }) => string | null)[] = [
+type ChatterCtx = { poll: string; countdownTo: number | null };
+type Chatter = (d: MatchDetail, x: ChatterCtx) => string | null;
+
+const sides = (d: MatchDetail) => [d.teams[0]?.name || 'the home side', d.teams[1]?.name || 'the visitors'] as const;
+const venueShort = (d: MatchDetail) => d.venue.split(',')[0].trim();
+const captainOf = (t: MatchDetail['teams'][number] | undefined) => t?.squad.find((p) => p.captain)?.name;
+/** a squad player (not the captain) to talk about */
+const playerOf = (t: MatchDetail['teams'][number] | undefined) => {
+  const pool = (t?.squad ?? []).filter((p) => !p.captain);
+  return pool.length ? pick(pool.slice(0, 7)).name : undefined;
+};
+/** whole minutes until the countdown / scheduled start, or null */
+export function minutesToStart(d: MatchDetail | null, countdownTo: number | null): number | null {
+  const cd = countdownTarget({ countdownTo }, d);
+  if (!cd) return null;
+  const ms = cd.at - Date.now();
+  return ms > 0 ? Math.ceil(ms / 60_000) : null;
+}
+const inMinutes = (n: number) => (n >= 120 ? `about ${Math.round(n / 60)} hours` : n >= 60 ? `about an hour${n >= 75 ? ' and a bit' : ''}` : n === 1 ? 'about a minute' : `${n} minutes`);
+
+/** Personalise the default "Who wins this match?" poll with the two team names. */
+function pollLine(d: MatchDetail, poll: string) {
+  const [a, b] = sides(d);
+  if (!poll || /^who wins this match\??/i.test(poll)) return `Fan poll time: who wins this one, ${a} or ${b}? Vote in the chat!`;
+  return `Time for our fan poll: ${poll} Drop your answer in the chat!`;
+}
+
+/* Build-up before the first ball: every line is about THIS match. */
+const preMatch: Chatter[] = [
+  (d, x) => {
+    const n = minutesToStart(d, x.countdownTo);
+    const [a, b] = sides(d);
+    if (n == null) return null;
+    return `We're ${inMinutes(n)} away from ${a} against ${b}${d.venue ? ` at ${venueShort(d)}` : ''}. Grab your snacks and stay right here!`;
+  },
+  (d) => {
+    const [a, b] = sides(d);
+    if (!d.description && !d.series) return null;
+    return `${a} and ${b} meet in the ${d.description || 'big game'}${d.series ? ` of the ${d.series}` : ''}. Plenty riding on this one.`;
+  },
+  (d) => (d.venue ? `What's a winning total at ${venueShort(d)} today? Drop your par score in the chat before the first ball.` : null),
+  (d) => {
+    const [a, b] = sides(d);
+    return `So, who are you backing today, ${a} or ${b}? Tell us in the comments, and tell us where you're watching from!`;
+  },
+  (d) => {
+    const [ca, cb] = [captainOf(d.teams[0]), captainOf(d.teams[1])];
+    const [a, b] = sides(d);
+    if (!ca || !cb) return null;
+    return `${ca} leads ${a}, ${cb} captains ${b}. Which skipper wins the tactical battle today?`;
+  },
+  (d) => {
+    if (d.toss) return `Toss news: ${d.toss.replace(/\.$/, '')}. Good call, or would you have done the opposite?`;
+    return `The toss is coming up${d.venue ? ` at ${venueShort(d)}` : ''}. If you were the captain, bat first or bowl first? Let us know!`;
+  },
+  (d) => {
+    const [pa, pb] = [playerOf(d.teams[0]), playerOf(d.teams[1])];
+    const [a, b] = sides(d);
+    if (!pa || !pb) return null;
+    return `Players to watch: ${pa} for ${a} and ${pb} for ${b}. Who makes the bigger impact today?`;
+  },
+  (d) => {
+    const [a, b] = sides(d);
+    return `Make your call before the first ball: who's your player of the match in ${a} versus ${b}?`;
+  },
+  (d, x) => pollLine(d, x.poll),
+  (d) => {
+    const [a, b] = sides(d);
+    return `Welcome to everyone joining us for ${a} versus ${b}! Say hi in the chat, and hit like if you're excited for this one.`;
+  },
+];
+
+/* During play: numbers from this match, plus questions that bring the viewers in. */
+const liveMatch: Chatter[] = [
   (d) => {
     if (!d.need) return null;
     const { runs, balls } = d.need;
@@ -58,12 +131,23 @@ const chatterTemplates: ((d: MatchDetail, extra: { matches: MatchListItem[]; pol
     return `Here's the equation: ${runs} runs from ${balls} balls. This one is going right down to the wire!`;
   },
   (d) => {
+    if (!d.need || d.need.balls <= 0) return null;
+    const team = d.teams.find((t) => t.id === d.battingTeamId)?.name ?? 'the chasing side';
+    return `${d.need.runs} needed from ${d.need.balls}. Can ${team} get there? Yes or no in the comments!`;
+  },
+  (d) => {
     const [a, b] = d.currentBatters;
     if (!a) return null;
     const p = d.partnership;
     return b
       ? `${a.name} is on ${a.runs} from ${a.balls}, ${b.name} has ${b.runs}. The partnership is worth ${p.runs} off ${p.balls} balls.`
       : `${a.name} is batting on ${a.runs} from ${a.balls} balls.`;
+  },
+  (d) => {
+    const bat = d.currentBatters[0];
+    const bw = d.currentBowler;
+    if (!bat || !bw || bat.runs < 15) return null;
+    return `${bat.name} has ${bat.runs}. Does this become a big one, or does ${bw.name} strike next? Your call in the chat!`;
   },
   (d) => {
     const bw = d.currentBowler;
@@ -77,27 +161,40 @@ const chatterTemplates: ((d: MatchDetail, extra: { matches: MatchListItem[]; pol
     const limit = inn.ballLimit || 0;
     if (!limit || balls < 12) return null;
     const proj = Math.round((inn.runs / balls) * limit);
-    return `At this rate, ${inn.teamName} are heading for around ${proj}. What would you call a par score on this pitch? Let us know in the comments!`;
+    return `At this rate, ${inn.teamName} are heading for around ${proj}${d.venue ? ` at ${venueShort(d)}` : ''}. What would you call a par score here? Let us know in the comments!`;
   },
   (d) => {
     const top = d.innings.flatMap((i) => i.batting).sort((a, b) => b.runs - a.runs)[0];
     if (!top || top.runs < 20) return null;
     return `Top scorer so far, ${top.name}, with ${top.runs} off ${top.balls} balls, including ${top.sixes} sixes.`;
   },
-  (_d, x) => {
-    const live = x.matches.filter((m) => m.state === 'in' && !m.isDemo).slice(0, 3);
-    if (live.length < 2) return null;
-    const m = pick(live);
-    return `Quick look around the grounds: ${m.teams.map((t) => `${t.name} ${t.score || ''}`.trim()).join(', versus ')}.`;
+  (d) => {
+    const [a, b] = sides(d);
+    return `Right now, who's on top in this game, ${a} or ${b}? Vote in the chat!`;
   },
-  (_d, x) => (x.poll ? `Time for our fan poll: ${x.poll} Drop your answer in the chat!` : null),
-  () =>
-    pick([
-      "If you're enjoying the coverage, hit that like button and subscribe. It really helps the channel.",
-      'Welcome to everyone just joining us. Tell us where you are watching from in the comments!',
-      "Who's your player of the match so far? Let us know in the chat.",
-      'Lovely to have you with us for live, ball-by-ball cricket.',
-    ]),
+  (d) => {
+    const [a, b] = sides(d);
+    return `Who's your player of the match so far in ${a} versus ${b}? Let us know in the chat.`;
+  },
+  (d, x) => pollLine(d, x.poll),
+  (d) => {
+    const inn = d.innings.find((i) => i.number === d.currentInnings);
+    const [a, b] = sides(d);
+    if (!inn) return `Welcome to everyone just joining us for ${a} versus ${b}. Tell us where you're watching from!`;
+    return `Welcome if you've just joined: ${inn.teamName} are ${inn.runs} for ${inn.wickets} after ${inn.overs} overs${d.venue ? ` at ${venueShort(d)}` : ''}. Say hi in the chat!`;
+  },
+  (d) => {
+    const [a, b] = sides(d);
+    return `If you're enjoying ${a} versus ${b} with us, hit that like button and subscribe. It really helps the channel.`;
+  },
+];
+
+const afterMatch: Chatter[] = [
+  (d) => (d.summary ? `That's the result: ${d.summary}. Who was your player of the match? Tell us in the comments.` : null),
+  (d) => {
+    const [a, b] = sides(d);
+    return `Thanks for watching ${a} versus ${b} with us. Hit like and subscribe for the next one!`;
+  },
 ];
 
 function scoreWords(d: MatchDetail | null) {
@@ -127,8 +224,9 @@ export interface CommentatorHost {
   voice(): string;
   chatterSeconds(): number;
   match(): MatchDetail | null;
-  matches(): MatchListItem[];
   poll(): string;
+  /** manual Starting Soon countdown (ms epoch) */
+  countdownTo(): number | null;
   emit(line: CommentaryLine): void;
   /** optional AI writer (Gemini): rewrites the template line for this moment; must resolve to the fallback on failure */
   write?(event: CricketEvent | null, fallback: string, recent: string[]): Promise<{ text: string; ai: boolean; lang?: string }>;
@@ -235,9 +333,11 @@ export class Commentator {
     if (Date.now() - this.lastSpoke < gap) return;
     const d = this.host.match();
     if (!d) return;
-    const tries = [...chatterTemplates].sort(() => Math.random() - 0.5);
+    // only ever about the selected match, never other games
+    const pool = d.state === 'pre' ? preMatch : d.state === 'post' ? afterMatch : liveMatch;
+    const tries = [...pool].sort(() => Math.random() - 0.5);
     for (const t of tries) {
-      const line = t(d, { matches: this.host.matches(), poll: this.host.poll() });
+      const line = t(d, { poll: this.host.poll(), countdownTo: this.host.countdownTo() });
       if (line && !this.recent.includes(line)) return this.speak(line, 0);
     }
   }
@@ -246,9 +346,24 @@ export class Commentator {
   intro(d: MatchDetail | null, title: string) {
     if (!this.host.enabled()) return;
     if (!d) return this.speak(`Hello and welcome to ${title}. Stay with us for live cricket.`, 3);
-    this.speak(
-      `Hello and welcome to ${title}! We're live with ${d.title}, ${d.description}${d.venue ? ` at ${d.venue.split(',')[0]}` : ''}. ${d.summary || ''}`.trim(),
-      3,
-    );
+    const [a, b] = sides(d);
+    const at = d.venue ? ` at ${venueShort(d)}` : '';
+    if (d.state === 'pre') {
+      const n = minutesToStart(d, this.host.countdownTo());
+      return this.speak(
+        `Hello and welcome to ${title}! It's ${a} against ${b}${d.description ? `, the ${d.description}` : ''}${at}.${n != null ? ` First ball in ${inMinutes(n)}.` : ''} Who are you backing? Tell us in the chat!`,
+        3,
+      );
+    }
+    this.speak(`Hello and welcome to ${title}! We're live with ${a} versus ${b}${d.description ? `, ${d.description}` : ''}${at}. ${d.summary || ''}`.trim(), 3);
+  }
+
+  /** the host just started the Starting Soon countdown */
+  countdownSet(d: MatchDetail) {
+    if (!this.host.enabled() || d.state !== 'pre') return;
+    const n = minutesToStart(d, this.host.countdownTo());
+    if (n == null) return;
+    const [a, b] = sides(d);
+    this.speak(`The countdown is on! ${a} versus ${b} is ${inMinutes(n)} away. Stay right here.`, 2);
   }
 }

@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { Alert, Avatar, Box, Button, ButtonGroup, Chip, List, ListItemButton, ListItemText, Stack, TextField, Typography } from '@mui/material';
 import type { StudioClient } from '../../lib/studioClient';
 import { Icon } from '../Icon';
+import { ShowControls } from './ShowControls';
 
 export function MatchPanel({ client }: { client: StudioClient }) {
   const [q, setQ] = useState('');
@@ -59,6 +60,7 @@ export function MatchPanel({ client }: { client: StudioClient }) {
           {st.matchKey ? 'Loading match data…' : 'No match attached. Pick one below to power scores and automation.'}
         </Alert>
       )}
+      <ShowControls client={client} />
       <TextField placeholder="Search live & upcoming matches" value={q} onChange={(e) => setQ(e.target.value)} InputProps={{ startAdornment: <Icon name="search" style={{ marginRight: 8 }} /> }} />
       <List dense disablePadding sx={{ maxHeight: 420, overflow: 'auto', mx: -1 }}>
         {list.map((x) => {

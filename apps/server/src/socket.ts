@@ -162,6 +162,34 @@ export function registerSocket(io: Server, studios: StudioManager, hub: MatchHub
     );
 
     socket.on(
+      'studio:announce',
+      asHost((r, a: { title?: string; text?: string; show?: boolean; speak?: boolean } | null, ack: Ack = noop) => {
+        const s = r.state;
+        if (!a) {
+          s.announcement = undefined;
+          r.commit();
+          return ack({ ok: true });
+        }
+        const title = String(a.title ?? '').trim().slice(0, 60);
+        const text = String(a.text ?? '').trim().slice(0, 400);
+        if (!title && !text) return ack({ ok: false, error: 'Type a message first' });
+        s.announcement = { title, text, ts: Date.now() };
+        if (a.show !== false && s.scene !== 'message') {
+          s.transition = pickTransition(s, s.transition);
+          s.scene = 'message';
+          s.baseScene = 'message';
+          s.sceneUntil = null;
+          s.pinnedUntil = Date.now() + 30_000;
+          r.automation.noteManualScene();
+        }
+        r.commit();
+        // the host's typed words, read out by the commentary voice (their own mic isn't on air)
+        if (a.speak) r.announce([title, text].filter(Boolean).join('. '));
+        ack({ ok: true });
+      }),
+    );
+
+    socket.on(
       'studio:overlay',
       asHost((r, o: { id: any; title: string; subtitle?: string; ms?: number; sfx?: any } | null, ack: Ack = noop) => {
         if (!o) {
@@ -190,6 +218,7 @@ export function registerSocket(io: Server, studios: StudioManager, hub: MatchHub
           b.camBubbles = !!b.camBubbles;
           if (!['br', 'bl', 'tr', 'tl'].includes(b.camBubbleCorner as string)) b.camBubbleCorner = s.brand.camBubbleCorner ?? 'br';
           b.camBubbleSize = Math.round(clampNum(b.camBubbleSize, 120, 400, s.brand.camBubbleSize ?? 220));
+          b.sponsors = Array.isArray(b.sponsors) ? b.sponsors.map((x) => String(x).trim().slice(0, 90)).filter(Boolean).slice(0, 12) : [];
           s.brand = b;
         }
         if (patch.autopilot) {
@@ -205,9 +234,14 @@ export function registerSocket(io: Server, studios: StudioManager, hub: MatchHub
           if (was && !s.autopilot.enabled && s.music.playing && s.autopilot.autoMusic) s.music = { ...s.music, playing: false };
         }
         if (patch.countdownTo !== undefined) s.countdownTo = patch.countdownTo;
+        if (patch.banner !== undefined) {
+          const kind = patch.banner?.kind;
+          s.banner = kind === 'sponsor' || kind === 'quickScore' ? { kind, since: Date.now() } : null;
+        }
         if (patch.spotlightId !== undefined) s.spotlightId = patch.spotlightId;
         if (typeof patch.name === 'string' && patch.name.trim()) s.name = patch.name.trim().slice(0, 80);
         if (patch.matchKey !== undefined && patch.matchKey !== s.matchKey) r.setMatch(patch.matchKey);
+        if (patch.countdownTo !== undefined && patch.countdownTo && r.latestMatch) r.commentator.countdownSet(r.latestMatch);
         r.commit();
         ack({ ok: true });
       }),

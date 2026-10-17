@@ -4,6 +4,8 @@ import { Celebration3D } from './fx3d';
 import { brandBug, captions, eventOverlay, scorebug, ticker } from './overlays';
 import { NO_TICKER_SCENES, SCENE_DRAW, SCOREBUG_SCENES } from './scenes';
 import { CAMERA_SCENES, camBubbles } from './camBubbles';
+import { bannerActive, quickScoreBanner, sponsorBanner } from './banners';
+import { applyTheme, withChrome } from './theme';
 import { TRANSITION_MS, drawTransition } from './transitions';
 
 const MAX_IMAGES = 160;
@@ -193,6 +195,7 @@ export class ProgramRenderer {
     const dur = TRANSITION_MS[this.transition] ?? 750;
     const t = clamp(age / dur);
     try {
+      applyTheme(s.brand.background, s.brand.accent || '#1a73e8');
       if (this.prevScene && t < 1) {
         const a = this.frameA.getContext('2d')!;
         const b = this.frameB.getContext('2d')!;
@@ -204,17 +207,24 @@ export class ProgramRenderer {
         this.drawScene(ctx, this.scene, age);
       }
       const rc = this.rc(ctx, this.scene, age);
-      if (s.brand.showScorebug && SCOREBUG_SCENES.includes(this.scene)) scorebug(rc, clamp((age - 300) / 500));
-      const tickerOn = s.brand.showTicker && !NO_TICKER_SCENES.includes(this.scene);
-      if (tickerOn) ticker(rc, clamp((age - 200) / 500));
-      // bubbles persist across data scenes; they only roll in when they first appear
-      const bubblesOn = !!s.brand.camBubbles && !CAMERA_SCENES.includes(this.scene) && rc.stage.length > 0;
-      if (!bubblesOn) this.bubblesSince = null;
-      else if (this.bubblesSince === null) this.bubblesSince = now;
-      if (this.bubblesSince !== null) camBubbles(rc, clamp((now - this.bubblesSince - 250) / 700), tickerOn);
-      brandBug(rc);
-      captions(rc);
-      eventOverlay(rc);
+      const scene = this.scene;
+      withChrome(() => {
+        // a lower banner takes the scorebug's place
+        if (s.brand.showScorebug && SCOREBUG_SCENES.includes(scene) && !bannerActive(rc)) scorebug(rc, clamp((age - 300) / 500));
+        const tickerOn = s.brand.showTicker && !NO_TICKER_SCENES.includes(scene);
+        if (tickerOn) ticker(rc, clamp((age - 200) / 500));
+        // bubbles persist across data scenes; they only roll in when they first appear
+        const bubblesOn = !!s.brand.camBubbles && !CAMERA_SCENES.includes(scene) && rc.stage.length > 0;
+        if (!bubblesOn) this.bubblesSince = null;
+        else if (this.bubblesSince === null) this.bubblesSince = now;
+        if (this.bubblesSince !== null) camBubbles(rc, clamp((now - this.bubblesSince - 250) / 700), tickerOn);
+        brandBug(rc);
+        captions(rc);
+        eventOverlay(rc);
+      });
+      // banners follow the design theme (light cards on light themes)
+      sponsorBanner(rc);
+      quickScoreBanner(rc);
     } catch (e) {
       // never let a bad data shape kill the stream
       console.error('[renderer]', e);

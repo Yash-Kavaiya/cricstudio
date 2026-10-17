@@ -1,21 +1,21 @@
 // The 18 broadcast scenes. Each is a pure draw(rc) on the 1920x1080 canvas.
-import type { Innings, MatchDetail, SceneId } from '@cricstudio/shared';
+import { countdownTarget, type Innings, type MatchDetail, type SceneId } from '@cricstudio/shared';
 import {
-  COL,
-  H,
-  W,
   background,
   ballChip,
   card,
   clamp,
+  COL,
   drawImageCover,
   easeOut,
   enter,
   fmtOvers,
   fx,
   gridRects,
+  H,
   headshot,
   hexA,
+  ink,
   isVideoReady,
   measure,
   participantTile,
@@ -24,6 +24,7 @@ import {
   teamBadge,
   teamColor,
   text,
+  W,
   type RenderCtx,
 } from './draw';
 import { ANALYSIS_SCENES } from './analysis';
@@ -48,7 +49,7 @@ function equaliser(rc: RenderCtx, x: number, y: number, w: number, h: number, ba
   for (let i = 0; i < bars; i++) {
     const v = 0.25 + 0.75 * Math.abs(Math.sin(now / 380 + i * 0.7) * Math.cos(now / 610 + i * 0.33));
     const bh = h * (rc.state.music.playing ? v : 0.08);
-    ctx.fillStyle = hexA(i % 3 === 0 ? rc.accent : '#ffffff', 0.55);
+    ctx.fillStyle = hexA(i % 3 === 0 ? rc.accent : COL.ink, 0.55);
     rr(ctx, x + i * bw + 2, y + h - bh, bw - 4, bh, 3);
     ctx.fill();
   }
@@ -71,6 +72,14 @@ function matchCardBig(rc: RenderCtx, m: MatchDetail, x: number, y: number, w: nu
 }
 
 /* 1 ─ Starting soon */
+function clock(ms: number) {
+  const s = Math.max(0, Math.ceil(ms / 1000));
+  const h = Math.floor(s / 3600);
+  const mm = String(Math.floor((s % 3600) / 60)).padStart(2, '0');
+  const ss = String(s % 60).padStart(2, '0');
+  return h ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
+}
+
 const startingSoon: SceneFn = (rc) => {
   const { ctx, age, now, state } = rc;
   background(rc);
@@ -79,24 +88,33 @@ const startingSoon: SceneFn = (rc) => {
     text(ctx, state.brand.title, W / 2, 300, { size: 92, weight: 900, align: 'center', max: 1600 });
   });
   if (rc.match) matchCardBig(rc, rc.match, W / 2 - 620, 380, 1240, enter(age, 1));
+  const cd = countdownTarget(state, rc.match);
+  const left = cd ? cd.at - Date.now() : 0;
+  const y = rc.match ? 840 : 620;
   fx(ctx, enter(age, 2), () => {
-    let label = 'Starting soon';
-    if (state.countdownTo) {
-      const s = Math.max(0, Math.round((state.countdownTo - Date.now()) / 1000));
-      label = s > 0 ? `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}` : "We're on!";
+    if (cd && left > 0) {
+      const start = new Date(cd.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+      text(ctx, cd.matchStart ? `FIRST BALL AT ${start.toUpperCase()}  ·  STARTS IN` : 'WE GO LIVE IN', W / 2, y - 112, { size: 28, weight: 700, align: 'center', color: rc.accent, spacing: 6 });
+      // a gentle pulse on each second
+      const pulse = 1 + 0.025 * Math.max(0, 1 - (left % 1000) / 250);
+      ctx.save();
+      ctx.translate(W / 2, y);
+      ctx.scale(pulse, pulse);
+      text(ctx, clock(left), 0, 0, { size: 130, weight: 800, align: 'center', font: 'cond' });
+      ctx.restore();
+      return;
     }
-    text(ctx, label, W / 2, rc.match ? 830 : 620, { size: state.countdownTo ? 120 : 64, weight: 800, align: 'center', font: 'cond' });
-    if (!state.countdownTo) {
-      for (let i = 0; i < 3; i++) {
-        const a = 0.3 + 0.7 * Math.abs(Math.sin(now / 400 - i * 0.6));
-        ctx.beginPath();
-        ctx.arc(W / 2 - 30 + i * 30, (rc.match ? 830 : 620) + 46, 8, 0, Math.PI * 2);
-        ctx.fillStyle = hexA('#ffffff', a);
-        ctx.fill();
-      }
+    const label = cd ? (cd.matchStart ? 'Toss & first ball coming up' : "We're on!") : 'Starting soon';
+    text(ctx, label, W / 2, y, { size: 64, weight: 800, align: 'center', font: 'cond' });
+    for (let i = 0; i < 3; i++) {
+      const a = 0.3 + 0.7 * Math.abs(Math.sin(now / 400 - i * 0.6));
+      ctx.beginPath();
+      ctx.arc(W / 2 - 30 + i * 30, y + 46, 8, 0, Math.PI * 2);
+      ctx.fillStyle = ink(a);
+      ctx.fill();
     }
   });
-  equaliser(rc, W / 2 - 300, 900, 600, 60);
+  equaliser(rc, W / 2 - 300, rc.match ? 930 : 900, 600, rc.match ? 50 : 60);
 };
 
 /* 2 ─ Host solo */
@@ -182,7 +200,7 @@ const scoreHero: SceneFn = (rc) => {
       const pw = 620;
       const px = W - 200 - pw;
       rr(ctx, px, 640, pw, 30, 15);
-      ctx.fillStyle = 'rgba(255,255,255,0.12)';
+      ctx.fillStyle = ink(0.12);
       ctx.fill();
       rr(ctx, px, 640, pw * clamp(((inn?.runs ?? 0) / total) * easeOut(age / 1200)), 30, 15);
       ctx.fillStyle = COL.green;
@@ -245,7 +263,7 @@ const ballByBall: SceneFn = (rc) => {
     fx(ctx, enter(age, 3 + i), () => {
       const y = 530 + i * 105;
       const ob = balls.filter((b) => b.overNumber === o);
-      card(ctx, 120, y, 1000, 90, { fill: 'rgba(255,255,255,0.04)', r: 18 });
+      card(ctx, 120, y, 1000, 90, { fill: ink(0.04), r: 18 });
       text(ctx, `Ov ${o}`, 150, y + 56, { size: 30, weight: 700, font: 'cond', color: COL.sub });
       ob.slice(0, 10).forEach((b, j) => ballChip(ctx, b.label, 290 + j * 70, y + 45, 26));
       text(ctx, `${ob.at(-1)?.overRuns ?? ob.reduce((a, b) => a + b.runs, 0)}`, 1085, y + 58, { size: 36, weight: 800, align: 'right', font: 'cond' });
@@ -386,7 +404,7 @@ const batters: SceneFn = (rc) => {
     fx(ctx, enter(age, 1 + i, 120, 600), () => {
       const x = i === 0 ? 140 : W - 140 - 720;
       card(ctx, x, 200, 720, 560, { fill: COL.card, r: 32, stroke: i === 0 ? hexA(rc.accent, 0.6) : undefined });
-      headshot(rc, b.name, b.headshot, x + 360, 340, 100, i === 0 ? rc.accent : 'rgba(255,255,255,0.2)');
+      headshot(rc, b.name, b.headshot, x + 360, 340, 100, i === 0 ? rc.accent : ink(0.2));
       text(ctx, b.name + (i === 0 ? ' *' : ''), x + 360, 505, { size: 44, weight: 700, align: 'center', max: 660 });
       text(ctx, String(b.runs), x + 360, 625, { size: 120, weight: 800, align: 'center', font: 'cond' });
       text(ctx, `${b.balls} balls`, x + 360, 670, { size: 28, color: COL.sub, align: 'center' });
@@ -568,7 +586,7 @@ const fallOfWickets: SceneFn = (rc) => {
     const x0 = 200,
       x1 = W - 200,
       y = 380;
-    ctx.fillStyle = 'rgba(255,255,255,0.15)';
+    ctx.fillStyle = ink(0.15);
     rr(ctx, x0, y - 6, x1 - x0, 12, 6);
     ctx.fill();
     const total = Math.max(inn.runs, 1);
@@ -752,6 +770,74 @@ const breakScene: SceneFn = (rc) => {
   equaliser(rc, W / 2 - 300, 860, 600, 70);
 };
 
+/* Announcement: a typed full-screen message (rain delay, bad light, technical trouble ...) */
+function wrapLines(ctx: CanvasRenderingContext2D, s: string, maxW: number, size: number, maxLines: number) {
+  const out: string[] = [];
+  for (const para of s.split(/\n+/)) {
+    let line = '';
+    for (const word of para.split(/\s+/).filter(Boolean)) {
+      const next = line ? `${line} ${word}` : word;
+      if (line && measure(ctx, next, { size, weight: 600 }) > maxW) {
+        out.push(line);
+        line = word;
+      } else line = next;
+    }
+    if (line) out.push(line);
+  }
+  if (out.length > maxLines) {
+    out.length = maxLines;
+    out[maxLines - 1] += '…';
+  }
+  return out;
+}
+
+const message: SceneFn = (rc) => {
+  const { ctx, age, now, match: m, state } = rc;
+  background(rc, rc.accent);
+  const a = state.announcement;
+  const title = (a?.title || 'Please stand by').toUpperCase();
+  const body = a?.text ?? '';
+  fx(ctx, enter(age, 0), () => {
+    // pulsing "on air" dot + headline
+    const tw = measure(ctx, title, { size: 110, weight: 900, font: 'cond' });
+    const dot = 0.5 + 0.5 * Math.abs(Math.sin(now / 500));
+    ctx.beginPath();
+    ctx.arc(W / 2 - Math.min(tw, 1500) / 2 - 50, 228, 16, 0, Math.PI * 2);
+    ctx.fillStyle = hexA(COL.red, dot);
+    ctx.fill();
+    text(ctx, title, W / 2, 270, { size: 110, weight: 900, align: 'center', font: 'cond', spacing: 3, max: 1500 });
+    text(ctx, state.brand.title, W / 2, 330, { size: 30, color: COL.sub, align: 'center', max: 1400 });
+  });
+  if (body) {
+    let size = 54;
+    let lines = wrapLines(ctx, body, 1440, size, 5);
+    if (lines.length > 3) lines = wrapLines(ctx, body, 1440, (size = 44), 6);
+    const lh = size * 1.35;
+    const h = lines.length * lh + 90;
+    fx(ctx, enter(age, 1), () => {
+      card(ctx, W / 2 - 800, 390, 1600, h, { fill: COL.card, r: 32 });
+      lines.forEach((l, i) => text(ctx, l, W / 2, 390 + 45 + size + i * lh, { size, weight: 600, align: 'center' }));
+    });
+  }
+  if (m) {
+    const inn = curInnings(m);
+    fx(ctx, enter(age, 2), () => {
+      const y = 860;
+      card(ctx, W / 2 - 520, y, 1040, 110, { fill: hexA('#000000', 0.35), r: 55 });
+      const [t1, t2] = m.teams;
+      teamBadge(rc, t1, W / 2 - 450, y + 55, 34);
+      teamBadge(rc, t2, W / 2 + 450, y + 55, 34);
+      const line = inn ? `${inn.teamAbbr} ${inn.runs}/${inn.wickets} (${fmtOvers(inn.overs)})` : `${t1?.abbr ?? ''} v ${t2?.abbr ?? ''}`;
+      text(ctx, line, W / 2, y + 52, { size: 40, weight: 800, align: 'center', font: 'cond', max: 760 });
+      text(ctx, m.statusText || m.description, W / 2, y + 90, { size: 22, color: COL.sub, align: 'center', max: 760 });
+    });
+  }
+  if (a?.ts) {
+    const mins = Math.floor((Date.now() - a.ts) / 60_000);
+    if (mins >= 1) text(ctx, `Updated ${mins} min ago`, W - 60, H - 40, { size: 22, color: COL.dim, align: 'right' });
+  }
+};
+
 /* 18 ─ Result & thanks */
 const result: SceneFn = (rc) => {
   const { ctx, age, match: m, now } = rc;
@@ -813,6 +899,7 @@ export const SCENE_DRAW: Record<SceneId, SceneFn> = {
   commentaryDesk,
   screenShare,
   break: breakScene,
+  message,
   result,
   ...(INSIGHT_SCENES as Record<string, SceneFn>),
   ...(ANALYSIS_SCENES as Record<string, SceneFn>),
@@ -821,5 +908,5 @@ export const SCENE_DRAW: Record<SceneId, SceneFn> = {
 /** Scenes where the persistent scorebug is shown over the picture. */
 export const SCOREBUG_SCENES: SceneId[] = ['hostSolo', 'panel', 'screenShare'];
 /** Scenes without the bottom ticker. */
-export const NO_TICKER_SCENES: SceneId[] = ['startingSoon', 'result'];
+export const NO_TICKER_SCENES: SceneId[] = ['startingSoon', 'result', 'message'];
 

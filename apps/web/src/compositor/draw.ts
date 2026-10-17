@@ -12,6 +12,8 @@ export const COL = {
   cardHi: 'rgba(255,255,255,0.10)',
   line: 'rgba(255,255,255,0.10)',
   text: '#ffffff',
+  /** base colour for faint tracks, grid lines and dots (white on dark themes, near-black on light ones) */
+  ink: '#ffffff',
   sub: '#aab4cf',
   dim: '#6f7a99',
   blue: '#4c8df6',
@@ -27,6 +29,28 @@ export const FONT = {
   sans: 'Roboto, "Helvetica Neue", Arial, sans-serif',
   cond: '"Roboto Condensed", Roboto, Arial, sans-serif',
 };
+
+export type TitleStyle = 'bar' | 'pill' | 'rule' | 'dots' | 'plain';
+
+/** Active design theme: card shape, borders, shadows and title treatment (set per frame by theme.ts). */
+export const THEME = {
+  light: false,
+  /** multiplier on every card corner radius */
+  radius: 1,
+  /** default card border; 'accent' follows the studio accent colour */
+  stroke: null as string | null,
+  strokeW: 1.5,
+  /** second hairline inside the border (scoreboard / art-deco frames) */
+  inset: null as string | null,
+  shadow: { color: 'rgba(0,0,0,0.35)', blur: 30, y: 10 } as { color: string; blur: number; y: number } | null,
+  /** neon themes: cards glow in the accent colour */
+  glow: false,
+  title: 'bar' as TitleStyle,
+  accent: '#1a73e8',
+};
+
+/** theme ink at an alpha: faint lines / tracks that work on light and dark themes */
+export const ink = (a: number) => hexA(COL.ink, a);
 
 export interface VideoSource {
   cam?: HTMLVideoElement;
@@ -94,22 +118,35 @@ export function card(
   h: number,
   o: { fill?: string | CanvasGradient; r?: number; stroke?: string; shadow?: boolean } = {},
 ) {
+  const r = (o.r ?? 24) * THEME.radius;
+  const stroke = o.stroke ?? (THEME.stroke === 'accent' ? hexA(THEME.accent, 0.75) : THEME.stroke);
   ctx.save();
   if (o.shadow !== false) {
-    ctx.shadowColor = 'rgba(0,0,0,0.35)';
-    ctx.shadowBlur = 30;
-    ctx.shadowOffsetY = 10;
+    if (THEME.glow) {
+      ctx.shadowColor = hexA(THEME.accent, 0.45);
+      ctx.shadowBlur = 28;
+    } else if (THEME.shadow) {
+      ctx.shadowColor = THEME.shadow.color;
+      ctx.shadowBlur = THEME.shadow.blur;
+      ctx.shadowOffsetY = THEME.shadow.y;
+    }
   }
-  rr(ctx, x, y, w, h, o.r ?? 24);
+  rr(ctx, x, y, w, h, r);
   ctx.fillStyle = o.fill ?? COL.card;
   ctx.fill();
   ctx.restore();
-  if (o.stroke) {
+  if (stroke) {
     ctx.save();
-    rr(ctx, x, y, w, h, o.r ?? 24);
-    ctx.strokeStyle = o.stroke;
-    ctx.lineWidth = 1.5;
+    rr(ctx, x, y, w, h, r);
+    ctx.strokeStyle = stroke;
+    ctx.lineWidth = o.stroke ? 1.5 : THEME.strokeW;
     ctx.stroke();
+    if (THEME.inset && !o.stroke && w > 40 && h > 40) {
+      rr(ctx, x + 7, y + 7, w - 14, h - 14, Math.max(0, r - 7));
+      ctx.strokeStyle = THEME.inset;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
     ctx.restore();
   }
 }
@@ -162,7 +199,8 @@ export function teamColor(t?: TeamInfo | { color?: string }) {
     g = (n >> 8) & 255,
     b = n & 255;
   const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-  if (lum < 60) return `rgb(${Math.min(255, r + 70)},${Math.min(255, g + 90)},${Math.min(255, b + 120)})`;
+  if (lum < 60 && !THEME.light) return `rgb(${Math.min(255, r + 70)},${Math.min(255, g + 90)},${Math.min(255, b + 120)})`;
+  if (lum > 200 && THEME.light) return `rgb(${Math.round(r * 0.55)},${Math.round(g * 0.55)},${Math.round(b * 0.55)})`;
   return c.startsWith('#') ? c : `#${c}`;
 }
 
@@ -221,7 +259,7 @@ export function avatar(ctx: CanvasRenderingContext2D, name: string, cx: number, 
   ctx.arc(cx, cy, r, 0, Math.PI * 2);
   ctx.fillStyle = c;
   ctx.fill();
-  text(ctx, initials(name) || '?', cx, cy + r * 0.02, { size: r * 0.8, weight: 500, align: 'center', base: 'middle' });
+  text(ctx, initials(name) || '?', cx, cy + r * 0.02, { size: r * 0.8, weight: 500, align: 'center', base: 'middle', color: '#ffffff' });
 }
 
 export function isVideoReady(v?: HTMLVideoElement) {
@@ -247,7 +285,7 @@ export function participantTile(rc: RenderCtx, p: Participant, x: number, y: num
   rr(ctx, x + 16, y + h - tagH - 16, 6, tagH, 3);
   ctx.fill();
   ctx.restore();
-  text(ctx, p.name, x + 16 + tagH * 0.55, y + h - 16 - tagH / 2 + 1, { size: fs, weight: 500, base: 'middle' });
+  text(ctx, p.name, x + 16 + tagH * 0.55, y + h - 16 - tagH / 2 + 1, { size: fs, weight: 500, base: 'middle', color: '#ffffff' });
   if (p.muted) {
     const mx = x + 16 + tw - tagH * 0.7;
     const my = y + h - 16 - tagH / 2;
@@ -334,7 +372,7 @@ export function teamBadge(rc: RenderCtx, team: { abbr: string; logo?: string; co
   } else {
     ctx.fillStyle = teamColor(team as TeamInfo);
     ctx.fill();
-    text(ctx, team.abbr.slice(0, 4), cx, cy + 1, { size: r * (team.abbr.length > 3 ? 0.55 : 0.7), weight: 800, align: 'center', base: 'middle', font: 'cond' });
+    text(ctx, team.abbr.slice(0, 4), cx, cy + 1, { size: r * (team.abbr.length > 3 ? 0.55 : 0.7), weight: 800, align: 'center', base: 'middle', font: 'cond', color: '#ffffff' });
   }
   ctx.restore();
 }
@@ -365,11 +403,55 @@ export function headshot(rc: RenderCtx, name: string, url: string | undefined, c
 export function sceneTitle(rc: RenderCtx, title: string, sub?: string) {
   const { ctx, age } = rc;
   fx(ctx, enter(age, 0, 0, 450, 0), () => {
-    ctx.fillStyle = rc.accent;
-    rr(ctx, 120, 92, 10, 64, 5);
-    ctx.fill();
-    text(ctx, title, 152, 142, { size: 56, weight: 700 });
-    if (sub) text(ctx, sub, 152 + measure(ctx, title, { size: 56, weight: 700 }) + 28, 140, { size: 30, weight: 400, color: COL.sub, max: 900 });
+    const tw = measure(ctx, title, { size: 56, weight: 700 });
+    let tx = 152;
+    switch (THEME.title) {
+      case 'pill': {
+        // title sits inside an accent pill
+        rr(ctx, 110, 84, tw + 70, 80, 40);
+        ctx.fillStyle = rc.accent;
+        ctx.fill();
+        tx = 145;
+        text(ctx, title, tx, 142, { size: 56, weight: 700, color: '#ffffff' });
+        tx += 35;
+        break;
+      }
+      case 'rule': {
+        // editorial: headline over a thin accent rule
+        text(ctx, title, 120, 142, { size: 58, weight: 700, font: 'cond' });
+        ctx.fillStyle = rc.accent;
+        ctx.fillRect(120, 168, 120, 4);
+        ctx.fillStyle = COL.line;
+        ctx.fillRect(244, 169, W - 244 - 340, 2);
+        tx = 120 + measure(ctx, title, { size: 58, weight: 700, font: 'cond' }) - tw;
+        break;
+      }
+      case 'dots': {
+        // four coloured dots as a kicker
+        [COL.gblue, COL.red, COL.yellow, COL.green].forEach((c, i) => {
+          ctx.beginPath();
+          ctx.arc(128 + i * 22, 118, 8, 0, Math.PI * 2);
+          ctx.fillStyle = c;
+          ctx.fill();
+        });
+        tx = 230;
+        text(ctx, title, tx, 142, { size: 56, weight: 700 });
+        break;
+      }
+      case 'plain': {
+        text(ctx, title, 120, 142, { size: 56, weight: 800 });
+        ctx.fillStyle = COL.line;
+        ctx.fillRect(0, 180, W, 2);
+        tx = 120;
+        break;
+      }
+      default:
+        ctx.fillStyle = rc.accent;
+        rr(ctx, 120, 92, 10, 64, 5);
+        ctx.fill();
+        text(ctx, title, 152, 142, { size: 56, weight: 700 });
+    }
+    if (sub) text(ctx, sub, tx + tw + 28, 140, { size: 30, weight: 400, color: COL.sub, max: 900 });
   }, 0, -40);
   const m = rc.match;
   if (m) {

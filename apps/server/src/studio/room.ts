@@ -1,7 +1,7 @@
 import { appendFileSync, existsSync, mkdirSync, renameSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { Server } from 'socket.io';
-import { EDGE_LANG_VOICES, GNANI_VOICES, type LiveStatus, type AiCommentaryStatus, type ChatMessage, type CommentaryLine, type CricketEvent, type MatchDetail, type MatchListItem, type Participant, type StudioState, type SttProvider, type Suggestion } from '@cricstudio/shared';
+import { BACKGROUNDS, EDGE_LANG_VOICES, GNANI_VOICES, type LiveStatus, type AiCommentaryStatus, type ChatMessage, type CommentaryLine, type CricketEvent, type MatchDetail, type MatchListItem, type Participant, type StudioState, type SttProvider, type Suggestion } from '@cricstudio/shared';
 import { eventFacts, geminiCommentary, gnaniSpeech, matchFacts } from '../commentary/ai';
 import { AutomationEngine } from '../automation/rules';
 import { Commentator } from '../commentary/commentator';
@@ -17,7 +17,7 @@ import { LivePipeline, type StreamTarget } from '../stream/pipeline';
 import { CloudProducer, findChrome } from '../worker/cloudProducer';
 
 const LEASE_TTL_MS = 20_000;
-const PERSISTED = ['scene', 'baseScene', 'automation', 'rules', 'music', 'brand', 'countdownTo', 'spotlightId', 'autopilot', 'wantLive', 'stt'] as const;
+const PERSISTED = ['scene', 'baseScene', 'automation', 'rules', 'music', 'brand', 'countdownTo', 'announcement', 'banner', 'spotlightId', 'autopilot', 'wantLive', 'stt'] as const;
 
 export function defaultState(rec: StudioRecord): StudioState {
   return {
@@ -131,7 +131,7 @@ export class StudioRoom {
       ...base,
       ...Object.fromEntries(PERSISTED.filter((k) => saved[k] !== undefined).map((k) => [k, saved[k]])),
       rules: { ...base.rules, ...(saved.rules ?? {}) },
-      brand: { ...base.brand, ...(saved.brand ?? {}) },
+      brand: { ...base.brand, ...(saved.brand ?? {}), ...(BACKGROUNDS.some((x) => x.id === saved.brand?.background) ? {} : { background: base.brand.background }) },
       music: { ...base.music, ...(saved.music ?? {}), playing: false },
       // studios saved with the old 8 s default move to the new 45 s default
       autopilot: { ...base.autopilot, ...(saved.autopilot ?? {}), ...(saved.autopilot?.sceneSeconds === 8 ? { sceneSeconds: 45 } : {}) },
@@ -154,8 +154,8 @@ export class StudioRoom {
       voice: () => this.state.autopilot.voice,
       chatterSeconds: () => this.state.autopilot.chatterSeconds,
       match: () => this.latestMatch,
-      matches: () => this.hub.cachedMatches(),
       poll: () => this.state.brand.pollQuestion,
+      countdownTo: () => this.state.countdownTo,
       emit: (line) => this.speak(line),
       write: (ev, fallback, recent) => this.writeLine(ev, fallback, recent),
     });
@@ -214,7 +214,8 @@ export class StudioRoom {
     const cur = this.latestMatch;
     if (cur?.state === 'post') this.postSince ||= Date.now();
     const curDone = !!cur && cur.state === 'post' && Date.now() - this.postSince > 10 * 60_000;
-    const curIdle = !this.state.matchKey || (cur && cur.state === 'pre') || this.state.matchKey === DEMO_KEY;
+    // a match the host picked stays on air (and in the commentary) until it is over, even before the first ball
+    const curIdle = !this.state.matchKey || this.state.matchKey === DEMO_KEY;
     if (!force && !curDone && !curIdle) return;
     const list = (await this.hub.listMatches()).filter((m) => !m.isDemo);
     const best = list.filter((m) => m.state === 'in').sort((a, b) => matchRank(b) - matchRank(a))[0];
@@ -270,8 +271,8 @@ export class StudioRoom {
         key,
         model: this.state.stt.geminiModel,
         language: this.spokenLang(),
-        facts: matchFacts(this.latestMatch),
-        event: eventFacts(ev),
+        facts: matchFacts(this.latestMatch, this.state.countdownTo),
+        event: eventFacts(ev, this.latestMatch),
         fallback,
         recent,
       });
@@ -329,6 +330,11 @@ export class StudioRoom {
     while (this.lines.size > 20) this.lines.delete(this.lines.keys().next().value!);
     this.io.to(this.roomName).emit('commentary:say', line);
     this.io.to(this.roomName).emit('captions:text', { from: 'AI Commentator', text: line.text, final: true, ts: Date.now() });
+  }
+
+  /** Host-typed announcement read out by the commentary voice, in the commentary language — even when the AI commentator is off. */
+  announce(text: string) {
+    void this.localize(text).then((l) => this.speak({ id: `a${Date.now()}`, text: l.text, voice: this.state.autopilot.voice, priority: 4, ts: Date.now(), lang: l.lang }));
   }
 
   speakText(text: string, priority = 2, lang?: string) {

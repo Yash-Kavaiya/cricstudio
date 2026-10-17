@@ -1,6 +1,7 @@
 // AI commentary: Gemini (Google AI Studio) writes the line, Gnani Timbre speaks it.
 // Both are optional — the commentator falls back to templates and free Edge voices.
 import type { CricketEvent, MatchDetail } from '@cricstudio/shared';
+import { minutesToStart } from './commentator';
 import { speakable } from './tts';
 
 const LANG_NAMES: Record<string, string> = {
@@ -20,13 +21,21 @@ const LANG_NAMES: Record<string, string> = {
 };
 
 /** Compact, factual match context so the model never has to guess numbers. */
-export function matchFacts(d: MatchDetail | null): string {
+export function matchFacts(d: MatchDetail | null, countdownTo: number | null = null): string {
   if (!d) return 'No live match attached.';
+  const mins = minutesToStart(d, countdownTo);
+  const captains = d.teams.map((t) => ({ t: t.name, c: t.squad.find((p) => p.captain)?.name })).filter((x) => x.c);
+  const squads = d.teams.filter((t) => t.squad.length).map((t) => `${t.name} players: ${t.squad.slice(0, 11).map((p) => p.name).join(', ')}.`);
   const inn = d.innings.find((i) => i.number === d.currentInnings) ?? d.innings.at(-1);
   const bat = d.teams.find((t) => t.id === d.battingTeamId);
   const lines = [
     `Match: ${d.title}, ${d.description}${d.venue ? ` at ${d.venue}` : ''}.`,
     d.statusText && `Status: ${d.statusText}.`,
+    d.series && `Series: ${d.series}.`,
+    d.state === 'pre' && `Stage: pre-match build-up, the first ball has not been bowled${mins != null ? `; starts in about ${mins} minutes` : ''}.`,
+    d.toss && `Toss: ${d.toss}.`,
+    ...captains.map((x) => `${x.t} captain: ${x.c}.`),
+    ...(d.state === 'pre' ? squads : []),
     inn && `${inn.teamName}: ${inn.runs}/${inn.wickets} in ${inn.overs} overs${inn.target ? `, chasing ${inn.target}` : ''}.`,
     d.need && `Need ${d.need.runs} from ${d.need.balls} balls${d.rrr ? ` (required rate ${d.rrr.toFixed(2)})` : ''}.`,
     d.crr ? `Current run rate ${d.crr.toFixed(2)}.` : '',
@@ -39,8 +48,9 @@ export function matchFacts(d: MatchDetail | null): string {
   return lines.filter(Boolean).join('\n');
 }
 
-export function eventFacts(ev: CricketEvent | null): string {
-  if (!ev) return 'Quiet spell between deliveries — offer insight, a stat-driven observation or a question to viewers.';
+export function eventFacts(ev: CricketEvent | null, d: MatchDetail | null = null): string {
+  if (!ev && d?.state === 'pre') return 'Pre-match build-up — preview this match, a player to watch, or ask viewers a question that names both teams.';
+  if (!ev) return 'Quiet spell between deliveries — offer insight, a stat-driven observation or a question to viewers about this match.';
   const parts = [`Event: ${ev.type} — ${ev.title}`, ev.subtitle, ev.player && `player ${ev.player}`, ev.value != null && `value ${ev.value}`, ev.ball?.text && `delivery: ${ev.ball.text}`];
   return parts.filter(Boolean).join(', ') + '.';
 }
@@ -60,6 +70,8 @@ export async function geminiCommentary(opts: {
     'You are the lead TV commentator on a live cricket broadcast — energetic, knowledgeable, natural, never robotic.',
     `Write ONE spoken line (max 32 words) in ${lang} for this exact moment.`,
     'Use ONLY the facts given; never invent scores, names or numbers. No hashtags, emojis, quotes, stage directions or labels.',
+    'Talk ONLY about this match and its two teams. Never mention, compare with or name any other match, fixture, team or score elsewhere.',
+    'Sound personal and warm: speak to the viewers directly, and when you ask them something, name the teams or players involved.',
     'Vary your phrasing; do not repeat these recent lines:',
     ...opts.recent.slice(-5).map((r) => `- ${r}`),
     '',

@@ -52,8 +52,20 @@ function harness(mode: StudioState['automation'] = 'auto') {
 const ev = (type: CricketEvent['type'], value?: number): CricketEvent => ({ type, matchKey: 'm', title: type, value, ts: Date.now() });
 
 describe('automation engine', () => {
-  it('wicket → overlay with sfx, then batting card, then back', () => {
+  it('Auto Live off: wicket shows the overlay but never switches the scene', () => {
     const { state, eng } = harness();
+    eng.onEvents([ev('WICKET', 3)]);
+    expect(state.overlay?.id).toBe('wicket');
+    expect(state.scene).toBe('panel');
+    expect(state.sceneUntil).toBeNull();
+    eng.onEvents([ev('INNINGS_END')]);
+    expect(state.scene).toBe('panel');
+    expect(state.baseScene).toBe('panel');
+    eng.dispose();
+  });
+  it('Auto Live: wicket → overlay with sfx, then batting card, then back', () => {
+    const { state, eng } = harness();
+    state.autopilot = { ...state.autopilot, enabled: true };
     eng.onEvents([ev('WICKET', 3)]);
     expect(state.overlay?.id).toBe('wicket');
     expect(state.overlay?.sfx).toBe('wicketSting');
@@ -86,12 +98,13 @@ describe('automation engine', () => {
     expect(suggestions).toHaveLength(1);
     eng.dispose();
   });
-  it('manual mode does nothing; innings end switches base scene in auto', () => {
+  it('manual mode does nothing; innings end switches base scene in Auto Live', () => {
     const m = harness('manual');
     m.eng.onEvents([ev('WICKET')]);
     expect(m.state.overlay).toBeNull();
     m.eng.dispose();
     const a = harness();
+    a.state.autopilot = { ...a.state.autopilot, enabled: true };
     a.eng.onEvents([ev('INNINGS_END')]);
     expect(a.state.baseScene).toBe('break');
     a.eng.dispose();

@@ -537,6 +537,7 @@ export function buildMatchDetail({ leagueId, eventId, summary, balls }: BuildDet
     description: str(comp.description ?? header.description),
     venue,
     toss,
+    startDate: str(comp.date ?? header.date) || undefined,
     state,
     statusText: str(status.type?.description ?? status.type?.detail),
     summary: str(status.summary),

@@ -104,12 +104,13 @@ export function ticker(rc: RenderCtx, p: number) {
   ctx.fillStyle = rc.accent;
   ctx.fillRect(0, y, 230, h);
   text(ctx, 'LIVE · CRICKET', 115, y + 37, { size: 22, weight: 800, align: 'center', spacing: 2 });
-  const others = rc.matches
-    .filter((m) => m.state === 'in' && !m.isDemo && m.id !== rc.match?.id)
-    .slice(0, 8)
-    .map((m) => `${m.teams.map((t) => `${t.abbr} ${t.score || ''}`.trim()).join(' v ')}`);
-  const notes = rc.match?.notes.slice(-2) ?? [];
-  const items = [state.brand.ticker, ...notes, ...others].filter(Boolean);
+  // only the selected match: its score, the equation and the latest match notes
+  const m = rc.match;
+  const inn = m?.innings.find((i) => i.number === m.currentInnings);
+  const score = m && inn ? `${m.title}: ${inn.teamAbbr} ${inn.runs}/${inn.wickets} (${fmtOvers(inn.overs)} ov)` : m ? `${m.title} · ${m.statusText}` : '';
+  const need = m?.need ? `${inn?.teamAbbr ?? ''} need ${m.need.runs} from ${m.need.balls} balls` : '';
+  const notes = m?.notes.slice(-2) ?? [];
+  const items = [state.brand.ticker, score, need, ...notes].filter(Boolean);
   const msg = items.join('     ●     ') + '     ●     ';
   ctx.beginPath();
   ctx.rect(240, y, W - 240, h);
