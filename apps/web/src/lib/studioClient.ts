@@ -945,6 +945,11 @@ export class StudioClient {
     return this.socket.timeout(30_000).emitWithAck('commentary:test', {}).catch((e: Error) => ({ ok: false, text: '', ai: false, error: e.message }));
   }
 
+  /** Host: put a typed message on air (Announcement scene) and optionally have the commentary voice read it. */
+  announce(a: { title: string; text: string; show?: boolean; speak?: boolean } | null) {
+    return this.emit('studio:announce', a);
+  }
+
   sayNow(text: string) {
     return this.emit('commentary:say', { text });
   }

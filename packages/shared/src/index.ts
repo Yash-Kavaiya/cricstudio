@@ -183,6 +183,8 @@ export interface MatchDetail {
   description: string; // "4th T20I"
   venue: string;
   toss: string;
+  /** scheduled start (ISO) */
+  startDate?: string;
   state: MatchStateCode;
   statusText: string;
   summary: string; // "India require 151 runs"
@@ -324,6 +326,15 @@ export interface Branding {
   camBubbleCorner?: CamBubbleCorner;
   /** bubble diameter in program pixels (1920×1080) */
   camBubbleSize?: number;
+  /** lines for the sponsor banner, shown one after another */
+  sponsors?: string[];
+}
+
+/** Lower banner on air: rotating sponsor lines, or the selected match's full quick score. */
+export interface Banner {
+  kind: 'sponsor' | 'quickScore';
+  /** when it went on air (ms) */
+  since: number;
 }
 
 export type CamBubbleCorner = 'br' | 'bl' | 'tr' | 'tl';
@@ -474,6 +485,9 @@ export interface StudioState {
   music: MusicState;
   brand: Branding;
   countdownTo: number | null;
+  /** typed full-screen message for the Announcement scene (rain delay, bad light, ...) */
+  announcement?: Announcement;
+  banner?: Banner | null;
   spotlightId: string | null;
   autopilot: AutopilotSettings;
   /** live-caption speech-to-text engine */
@@ -484,6 +498,20 @@ export interface StudioState {
   transition: TransitionId;
   /** non-null when live is desired (survives restarts for 24/7 resume) */
   wantLive: boolean;
+}
+
+export interface Announcement {
+  title: string;
+  text: string;
+  /** when the message was put on air (ms) */
+  ts: number;
+}
+
+/** Countdown target for the Starting Soon scene: the manual timer, else the selected match's scheduled start. */
+export function countdownTarget(state: Pick<StudioState, 'countdownTo'>, match: { state: MatchStateCode; startDate?: string } | null | undefined): { at: number; matchStart: boolean } | null {
+  if (state.countdownTo) return { at: state.countdownTo, matchStart: false };
+  const at = match?.state === 'pre' && match.startDate ? Date.parse(match.startDate) : NaN;
+  return Number.isFinite(at) && at > Date.now() - 60 * 60_000 ? { at, matchStart: true } : null;
 }
 
 export interface ActiveOverlay {

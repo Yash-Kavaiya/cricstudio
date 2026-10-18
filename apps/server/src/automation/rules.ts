@@ -1,5 +1,6 @@
 import {
   SCENES,
+  countdownTarget,
   TRANSITIONS,
   type ActiveOverlay,
   type CricketEvent,
@@ -31,8 +32,7 @@ interface OverlayPlan {
 }
 
 /** Scenes where automation must never cut away (host is presenting something deliberate). */
-const PROTECTED: SceneId[] = ['startingSoon', 'screenShare', 'result'];
-const ROTATION: SceneId[] = ['scoreHero', 'ballByBall', 'batters', 'manhattan', 'bowlerSpotlight', 'winPredictor', 'worm', 'boundaryTracker', 'aroundGrounds'];
+const PROTECTED: SceneId[] = ['startingSoon', 'screenShare', 'result', 'message'];
 const MUSIC_ROTATION = ['stadium-anthem', 'powerplay-pulse', 'chill-pitch', 'victory-lap', 'tea-break'];
 const MUSIC_TRACK_MS = 4 * 60_000;
 
@@ -44,10 +44,9 @@ export function pickTransition(st: StudioState, avoid?: TransitionId): Transitio
 }
 
 export class AutomationEngine {
-  private queue: { plan: OverlayPlan; ev: CricketEvent }[] = [];
+  private queue: { plan: OverlayPlan; ev: CricketEvent; cut: boolean }[] = [];
   private overlaySeq = 0;
   private lastSceneChange = Date.now();
-  private rotationIdx = 0;
   private playlist: SceneId[] = [];
   private scoreQueue: SceneId[] = [];
   private camQueue: SceneId[] = [];
@@ -133,7 +132,7 @@ export class AutomationEngine {
       const plan = this.plan(ev);
       if (!plan) continue;
       // pre-show countdown stays clean; only match-level events break through
-      if (st.scene === 'startingSoon' && plan.priority < 5) continue;
+      if ((st.scene === 'startingSoon' || st.scene === 'message') && plan.priority < 5) continue;
       if (mode === 'assist') {
         this.host.suggest({
           id: `${ev.type}-${ev.ts}-${Math.random().toString(36).slice(2, 6)}`,
@@ -144,7 +143,8 @@ export class AutomationEngine {
         });
         continue;
       }
-      this.enqueue(plan, ev);
+      // only Auto Live switches scenes by itself; otherwise the host's scene stays and the overlay plays over it
+      this.enqueue(plan, ev, st.autopilot.enabled);
     }
     this.tick();
   }
@@ -152,13 +152,13 @@ export class AutomationEngine {
   /** Apply a suggestion the host accepted (assist mode) or a dev-simulated event. */
   applyEvent(ev: CricketEvent) {
     const plan = this.plan(ev);
-    if (plan) this.enqueue(plan, ev);
+    if (plan) this.enqueue(plan, ev, true);
     this.tick();
   }
 
-  private enqueue(plan: OverlayPlan, ev: CricketEvent) {
+  private enqueue(plan: OverlayPlan, ev: CricketEvent, cut: boolean) {
     // keep highest priority first, cap backlog so we stay "live"
-    this.queue.push({ plan, ev });
+    this.queue.push({ plan, ev, cut });
     this.queue.sort((a, b) => b.plan.priority - a.plan.priority);
     if (this.queue.length > 3) this.queue.length = 3;
   }
@@ -272,7 +272,7 @@ export class AutomationEngine {
     const next = this.queue[0];
     if (next && (!st.overlay || next.plan.priority > curPriority)) {
       this.queue.shift();
-      const { plan, ev } = next;
+      const { plan, ev, cut } = next;
       st.overlay = {
         id: plan.overlay,
         title: ev.title,
@@ -286,7 +286,9 @@ export class AutomationEngine {
       };
       dirty = true;
       const pinned = st.pinnedUntil > now && !st.autopilot.enabled;
-      if (plan.base && !(st.scene === 'screenShare' && pinned)) {
+      if (!cut) {
+        // Auto Live is off: keep the host's scene
+      } else if (plan.base && !(st.scene === 'screenShare' && pinned)) {
         this.cut(plan.base, { base: true });
       } else if (plan.then && !pinned && !PROTECTED.includes(st.scene) && st.scene !== 'break') {
         this.cut(plan.then.scene, { temporaryMs: plan.ms + plan.then.ms });
@@ -296,7 +298,8 @@ export class AutomationEngine {
     // revert temporary scene
     if (st.sceneUntil && st.sceneUntil <= now) {
       st.sceneUntil = null;
-      if (!st.autopilot.enabled) this.cut(st.baseScene);
+      // Auto Live was switched off mid-cut: stay on what's on air instead of cutting again
+      if (!st.autopilot.enabled) st.baseScene = st.scene;
       else this.lastSceneChange = 0; // autopilot picks the next scene right away
       dirty = true;
     }
@@ -307,6 +310,14 @@ export class AutomationEngine {
       const busy = !!st.sceneUntil || (st.overlay && (st.overlay.priority ?? 0) >= 4);
       if (!busy && now - this.lastSceneChange > hold * 1000) {
         const m = this.host.match?.();
+        // a typed announcement (rain delay ...) and a running pre-show countdown stay on air until the host moves on
+        const cd = countdownTarget(st, m);
+        if (st.scene === 'message' || (st.scene === 'startingSoon' && cd && cd.at > now)) {
+          this.lastSceneChange = now;
+          if (this.manageMusic(st, now)) dirty = true;
+          if (dirty) this.host.commit();
+          return;
+        }
         const stay = (st.scene === 'result' && m?.state === 'post') || (st.scene === 'break' && m?.innings.some((i) => i.description === 'complete') && m.innings.length < 2);
         const scene = stay && now - this.lastSceneChange < 90_000 ? null : this.nextAutopilotScene(st);
         if (scene) {
@@ -315,21 +326,6 @@ export class AutomationEngine {
         } else this.lastSceneChange = now;
       }
       if (this.manageMusic(st, now)) dirty = true;
-    } else if (
-      // classic idle rotation: briefly cut to a stats scene, then back to cameras
-      st.automation === 'auto' &&
-      st.rules.idleRotation &&
-      st.matchKey &&
-      !st.sceneUntil &&
-      !st.overlay &&
-      st.pinnedUntil <= now &&
-      !PROTECTED.includes(st.scene) &&
-      st.scene !== 'break' &&
-      now - this.lastSceneChange > st.rules.idleSeconds * 1000
-    ) {
-      const scene = ROTATION[this.rotationIdx++ % ROTATION.length];
-      this.cut(scene, { temporaryMs: 12000 });
-      dirty = true;
     }
 
     if (dirty) this.host.commit();

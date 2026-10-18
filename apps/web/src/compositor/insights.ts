@@ -1,25 +1,26 @@
 // Insights pack: 10 extra analytical scenes built from ESPN data.
 import type { Ball, BatterLine, Innings, MatchDetail, SceneId } from '@cricstudio/shared';
 import {
-  COL,
-  H,
-  W,
   background,
   ballChip,
   card,
   clamp,
+  COL,
   easeOut,
   enter,
   fmtOvers,
   fx,
+  H,
   headshot,
   hexA,
+  ink,
   measure,
   rr,
   sceneTitle,
   teamBadge,
   teamColor,
   text,
+  W,
   type RenderCtx,
 } from './draw';
 
@@ -173,7 +174,7 @@ const projectedScore: SceneFn = (rc) => {
       const y = 240 + i * 128;
       text(ctx, k, 160, y + 62, { size: 34, weight: i === 0 ? 800 : 500, color: i === 0 ? rc.accent : COL.text });
       rr(ctx, x0, y + 20, bw, 64, 18);
-      ctx.fillStyle = 'rgba(255,255,255,0.07)';
+      ctx.fillStyle = ink(0.07);
       ctx.fill();
       const w = (bw * v) / max * easeOut((age - 300 - i * 90) / 900);
       rr(ctx, x0, y + 20, Math.max(36, w), 64, 18);
@@ -228,7 +229,7 @@ const phaseAnalysis: SceneFn = (rc) => {
         text(ctx, ph.balls ? `RR ${rr6.toFixed(2)}` : 'yet to come', x + 30, y + 196, { size: 28, weight: 600, color: ph.balls ? col : COL.dim });
         const bw = 200;
         rr(ctx, x + 300, y + 170, bw, 16, 8);
-        ctx.fillStyle = 'rgba(255,255,255,0.1)';
+        ctx.fillStyle = ink(0.1);
         ctx.fill();
         rr(ctx, x + 300, y + 170, (bw * clamp(rr6 / 14)) * easeOut((age - 500) / 900), 16, 8);
         ctx.fillStyle = col;
@@ -264,7 +265,7 @@ const boundaryTracker: SceneFn = (rc) => {
       const x = 140 + i * 420;
       card(ctx, x, 220, 390, 270, { fill: hexA(c, 0.16), r: 30, stroke: hexA(c, 0.5) });
       text(ctx, k, x + 34, 280, { size: 22, weight: 800, color: COL.sub, spacing: 2 });
-      text(ctx, v, x + 34, 420, { size: 120, weight: 800, font: 'cond', color: '#fff' });
+      text(ctx, v, x + 34, 420, { size: 120, weight: 800, font: 'cond', color: COL.text });
     }),
   );
   fx(ctx, enter(age, 6), () => {
@@ -272,7 +273,7 @@ const boundaryTracker: SceneFn = (rc) => {
     text(ctx, 'RUNS FROM BOUNDARIES', 180, 600, { size: 22, weight: 800, color: COL.sub, spacing: 2 });
     const bw = W - 360;
     rr(ctx, 180, 625, bw, 44, 22);
-    ctx.fillStyle = 'rgba(255,255,255,0.1)';
+    ctx.fillStyle = ink(0.1);
     ctx.fill();
     rr(ctx, 180, 625, (bw * pct) / 100 * easeOut((age - 500) / 1000), 44, 22);
     ctx.fillStyle = COL.green;

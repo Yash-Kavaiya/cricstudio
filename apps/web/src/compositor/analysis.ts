@@ -1,6 +1,6 @@
 // Analysis pack: 12 in-depth score & match analysis scenes built from ESPN ball-by-ball data.
 import type { BatterLine, Innings, MatchDetail, OverSummary, SceneId, TeamInfo } from '@cricstudio/shared';
-import { COL, H, W, background, ballChip, card, clamp, easeOut, enter, fmtOvers, fx, hexA, measure, rr, sceneTitle, teamBadge, teamColor, text, type RenderCtx } from './draw';
+import { background, ballChip, card, clamp, COL, easeOut, enter, fmtOvers, fx, H, hexA, ink, measure, rr, sceneTitle, teamBadge, teamColor, text, W, type RenderCtx } from './draw';
 import { winProbability } from './insights';
 
 type SceneFn = (rc: RenderCtx) => void;
@@ -57,7 +57,7 @@ function donut(ctx: CanvasRenderingContext2D, cx: number, cy: number, r: number,
   ctx.lineWidth = thick;
   ctx.beginPath();
   ctx.arc(cx, cy, r, 0, Math.PI * 2);
-  ctx.strokeStyle = 'rgba(255,255,255,0.07)';
+  ctx.strokeStyle = ink(0.07);
   ctx.stroke();
   if (total > 0) {
     let a = -Math.PI / 2;
@@ -85,7 +85,7 @@ function legendRow(ctx: CanvasRenderingContext2D, x: number, y: number, color: s
 
 function bar(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, frac: number, color: string | CanvasGradient) {
   rr(ctx, x, y, w, h, h / 2);
-  ctx.fillStyle = 'rgba(255,255,255,0.08)';
+  ctx.fillStyle = ink(0.08);
   ctx.fill();
   if (frac <= 0) return;
   rr(ctx, x, y, Math.max(h, w * clamp(frac)), h, h / 2);
@@ -270,7 +270,7 @@ const overHeatmap: SceneFn = (rc) => {
         ctx.globalAlpha *= 0.4;
         ctx.fill();
         ctx.globalAlpha /= 0.4;
-        text(ctx, String(o), cx + 14, cy + 30, { size: 20, weight: 700, color: 'rgba(255,255,255,0.75)' });
+        text(ctx, String(o), cx + 14, cy + 30, { size: 20, weight: 700, color: ink(0.75) });
         text(ctx, String(os.runs), cx + tw / 2, cy + th / 2 + (th > 110 ? 12 : 18), { size: th > 110 ? 60 : 44, weight: 800, align: 'center', font: 'cond' });
         for (let w = 0; w < os.wickets; w++) {
           ctx.beginPath();
@@ -436,7 +436,7 @@ const battingImpact: SceneFn = (rc) => {
     card(ctx, 120, 190, W - 240, 820, { fill: COL.card, r: 28 });
     ctx.save();
     ctx.setLineDash([10, 10]);
-    ctx.strokeStyle = 'rgba(255,255,255,0.22)';
+    ctx.strokeStyle = ink(0.22);
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.moveTo(x0, Y(avgSR));
@@ -449,7 +449,7 @@ const battingImpact: SceneFn = (rc) => {
     for (let v = 0; v <= maxB; v += maxB > 80 ? 20 : 10) text(ctx, String(v), X(v), y0 + 36, { size: 20, color: COL.dim, align: 'center' });
     text(ctx, 'BALLS FACED', x0 + cw / 2, y0 + 72, { size: 18, weight: 700, color: COL.dim, align: 'center', spacing: 3 });
     text(ctx, `avg SR ${avgSR.toFixed(0)}`, x0 + cw - 10, Y(avgSR) - 12, { size: 20, color: COL.sub, align: 'right' });
-    const q = (s: string, x: number, y: number, al: CanvasTextAlign) => text(ctx, s, x, y, { size: 22, weight: 800, color: 'rgba(255,255,255,0.28)', align: al, spacing: 3 });
+    const q = (s: string, x: number, y: number, al: CanvasTextAlign) => text(ctx, s, x, y, { size: 22, weight: 800, color: ink(0.28), align: al, spacing: 3 });
     q('CAMEOS', x0 + 20, y0 - ch + 30, 'left');
     q('MATCH-WINNERS', x0 + cw - 20, y0 - ch + 30, 'right');
     q('STRUGGLED', x0 + 20, y0 - 20, 'left');
@@ -517,7 +517,7 @@ const bowlingAnalysis: SceneFn = (rc) => {
       const pr = easeOut((age - 300 - i * 70) / 900);
       if (i % 2 === 0) {
         rr(ctx, 150, y, W - 300, 74, 16);
-        ctx.fillStyle = 'rgba(255,255,255,0.03)';
+        ctx.fillStyle = ink(0.03);
         ctx.fill();
       }
       text(ctx, b.name, 170, y + 48, { size: 30, weight: 600, max: 420 });
@@ -652,7 +652,7 @@ const momentum: SceneFn = (rc) => {
   const bw = cw / os.length;
   fx(ctx, enter(age, 1), () => {
     card(ctx, 120, 200, 1260, 800, { fill: COL.card, r: 30 });
-    ctx.fillStyle = 'rgba(255,255,255,0.25)';
+    ctx.fillStyle = ink(0.25);
     ctx.fillRect(x0, cy, cw, 2);
     text(ctx, `avg ${avg.toFixed(1)}`, x0 + cw + 14, cy + 8, { size: 22, weight: 700, color: COL.sub });
     text(ctx, 'ABOVE AVERAGE', x0, 260, { size: 20, weight: 800, color: COL.green, spacing: 2 });
@@ -691,7 +691,7 @@ const momentum: SceneFn = (rc) => {
     ctx.stroke();
     const shown = idx * easeOut((age - 700) / 1200);
     const a = Math.PI + ((shown + 100) / 200) * Math.PI;
-    ctx.strokeStyle = '#fff';
+    ctx.strokeStyle = COL.text;
     ctx.lineWidth = 8;
     ctx.beginPath();
     ctx.moveTo(gx, gy);
@@ -699,7 +699,7 @@ const momentum: SceneFn = (rc) => {
     ctx.stroke();
     ctx.beginPath();
     ctx.arc(gx, gy, 16, 0, Math.PI * 2);
-    ctx.fillStyle = '#fff';
+    ctx.fillStyle = COL.text;
     ctx.fill();
     ctx.restore();
     text(ctx, 'MOMENTUM', gx, 300, { size: 22, weight: 800, color: COL.sub, align: 'center', spacing: 3 });
@@ -761,7 +761,7 @@ const inningsComparison: SceneFn = (rc) => {
     const sub = wd === 0 ? 'same wickets down' : `${Math.abs(wd)} wicket${Math.abs(wd) === 1 ? '' : 's'} ${wd > 0 ? 'more' : 'fewer'} down`;
     const c = diff >= 0 ? COL.green : COL.red;
     card(ctx, W / 2 - 640, 560, 1280, 110, { fill: hexA(c, 0.2), r: 55, stroke: hexA(c, 0.6) });
-    text(ctx, `${msg} · ${sub}`, W / 2, 630, { size: 36, weight: 800, align: 'center', color: '#fff', max: 1220 });
+    text(ctx, `${msg} · ${sub}`, W / 2, 630, { size: 36, weight: 800, align: 'center', color: COL.text, max: 1220 });
   });
   const rows: [string, number, number, boolean][] = [
     ['Runs', A.runs, B.runs, true],

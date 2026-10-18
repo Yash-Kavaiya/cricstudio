@@ -1,4 +1,4 @@
-import { Box, Button, Chip, Divider, FormControlLabel, Slider, Stack, Switch, ToggleButton, ToggleButtonGroup, Typography } from '@mui/material';
+import { Box, Button, Chip, Divider, FormControlLabel, Stack, Switch, ToggleButton, ToggleButtonGroup, Typography } from '@mui/material';
 import { AnimatePresence, motion } from 'framer-motion';
 import type { AutomationRules, CricketEvent } from '@cricstudio/shared';
 import type { StudioClient } from '../../lib/studioClient';
@@ -18,12 +18,11 @@ const SIMS: { type: CricketEvent['type']; label: string; color?: 'primary' | 'er
 ];
 
 const RULES: { key: keyof AutomationRules; label: string; hint: string }[] = [
-  { key: 'wicket', label: 'Wickets', hint: 'Wicket alert + stumps sound → batting card' },
+  { key: 'wicket', label: 'Wickets', hint: 'Wicket alert + stumps sound (→ batting card in Auto Live)' },
   { key: 'boundary', label: 'Boundaries', hint: 'FOUR / SIX celebration with crowd + horn' },
   { key: 'overEnd', label: 'End of over', hint: 'Over summary, Manhattan every 5 overs' },
   { key: 'milestones', label: 'Milestones', hint: '50s, 100s, 5-fors and partnerships' },
-  { key: 'inningsBreak', label: 'Innings / result', hint: 'Switch to Break and Result scenes' },
-  { key: 'idleRotation', label: 'Idle rotation', hint: 'Cut to a stats scene when nothing happens' },
+  { key: 'inningsBreak', label: 'Innings / result', hint: 'Innings and result alerts (Auto Live also switches to Break / Result)' },
 ];
 
 const EV_ICON: Partial<Record<CricketEvent['type'], string>> = {
@@ -64,7 +63,7 @@ export function AutomationPanel({ client }: { client: StudioClient }) {
         </ToggleButtonGroup>
         <Typography variant="caption" color="text.secondary">
           {st.automation === 'auto'
-            ? 'Scenes, overlays and sound effects follow the live match automatically. Your manual cuts pin the scene for 30s.'
+            ? 'Overlays and sound effects follow the live match automatically. Scenes only change when you cut — or when Auto Live is on.'
             : st.automation === 'assist'
               ? 'Automation suggests — you approve with one click.'
               : 'Nothing happens automatically.'}
@@ -108,17 +107,6 @@ export function AutomationPanel({ client }: { client: StudioClient }) {
             }
           />
         ))}
-        <Typography variant="caption" color="text.secondary">
-          Idle rotation after {st.rules.idleSeconds}s
-        </Typography>
-        <Slider
-          size="small"
-          min={30}
-          max={300}
-          step={15}
-          value={st.rules.idleSeconds}
-          onChangeCommitted={(_, v) => void client.patch({ rules: { ...st.rules, idleSeconds: v as number } })}
-        />
       </Box>
 
       <Divider />
