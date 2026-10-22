@@ -43,6 +43,12 @@ export function pickTransition(st: StudioState, avoid?: TransitionId): Transitio
   return pool[Math.floor(Math.random() * pool.length)];
 }
 
+/** Celebration looks per overlay type (see Celebration3D in the web app). */
+const CELEBRATION_VARIANTS = 5;
+
+/** Data scene groups the autopilot's non-score share walks through in turn. */
+const DATA_GROUPS = ['Stats', 'Insights', 'Analysis', 'Match'] as const;
+
 export class AutomationEngine {
   private queue: { plan: OverlayPlan; ev: CricketEvent; cut: boolean }[] = [];
   private overlaySeq = 0;
@@ -50,6 +56,10 @@ export class AutomationEngine {
   private playlist: SceneId[] = [];
   private scoreQueue: SceneId[] = [];
   private camQueue: SceneId[] = [];
+  private groupQueues = new Map<string, SceneId[]>();
+  private variantBags = new Map<string, number[]>();
+  private lastVariant = new Map<string, number>();
+  private dataTurn = 0;
   private otherPicks = 0;
   private scorePicks = 0;
   private totalPicks = 0;
@@ -166,8 +176,24 @@ export class AutomationEngine {
   showOverlay(o: Omit<ActiveOverlay, 'seq' | 'startedAt' | 'until'> & { ms: number }) {
     const st = this.host.state();
     const now = Date.now();
-    st.overlay = { id: o.id, title: o.title, subtitle: o.subtitle, value: o.value, sfx: o.sfx, startedAt: now, until: now + o.ms, seq: ++this.overlaySeq };
+    st.overlay = { id: o.id, title: o.title, subtitle: o.subtitle, value: o.value, sfx: o.sfx, startedAt: now, until: now + o.ms, seq: ++this.overlaySeq, variant: this.nextVariant(o.id) };
     this.host.commit();
+  }
+
+  /**
+   * Celebration variant for an overlay type: a shuffled bag of all variants, refilled when empty and
+   * never starting with the one that just played, so every look comes round before any repeats.
+   */
+  nextVariant(id: string): number {
+    let bag = this.variantBags.get(id);
+    if (!bag?.length) {
+      bag = Array.from({ length: CELEBRATION_VARIANTS }, (_, i) => i).sort(() => Math.random() - 0.5);
+      if (bag.length > 1 && bag[0] === this.lastVariant.get(id)) bag.push(bag.shift()!);
+      this.variantBags.set(id, bag);
+    }
+    const v = bag.shift()!;
+    this.lastVariant.set(id, v);
+    return v;
   }
 
   /** Scenes the autopilot can rotate through right now. */
@@ -185,6 +211,7 @@ export class AutomationEngine {
       if (!m) return true;
       if (id === 'winPredictor' || id === 'projectedScore') return m.state === 'in';
       if (id === 'matchup' || id === 'batters' || id === 'wagonWheel') return m.currentBatters.length > 0;
+      if (id === 'ground3d') return m.innings.some((i) => i.batting.length > 0);
       if (id === 'bowlerSpotlight') return !!m.currentBowler;
       if (id === 'chaseCalculator') return m.state === 'in' && (!!m.need || m.innings.some((i) => i.isCurrent && i.target > i.runs));
       if (id === 'inningsComparison') return m.innings.filter((i) => i.overSummaries.length).length >= 2;
@@ -195,29 +222,36 @@ export class AutomationEngine {
   }
 
   /**
-   * Weighted rotation: Score scenes (live score, ball-by-ball, batting, bowling) get `scoreShare`
-   * of the cuts (default 70%), everything else shares the rest. The split is kept exact over time
-   * (deficit counting, not dice rolls); each pool is shuffled and cycled so nothing repeats back-to-back.
+   * Weighted rotation: the "live" share (`scoreShare`, default 70%) goes to Score scenes (live score,
+   * ball-by-ball, batting, bowling) plus camera shots when people are on stage; the rest always goes
+   * to data scenes (stats, insights, analysis, match), so cameras never eat into it. Data cuts walk
+   * the groups round-robin so each kind gets airtime. The split is kept exact over time (deficit
+   * counting, not dice rolls); each pool is shuffled and cycled so nothing repeats back-to-back.
    */
   private nextAutopilotScene(st: StudioState): SceneId | null {
     const pool = this.autopilotPlaylist(st);
     if (!pool.length) return null;
-    const isScore = (id: SceneId) => SCENES.find((x) => x.id === id)?.group === 'Score';
-    const score = pool.filter(isScore);
-    const other = pool.filter((id) => !isScore(id));
-    const isCam = (id: SceneId) => !!SCENES.find((x) => x.id === id)?.usesCameras;
-    const cams = other.filter(isCam);
-    const rest = other.filter((id) => !isCam(id));
+    const meta = (id: SceneId) => SCENES.find((x) => x.id === id);
+    const isCam = (id: SceneId) => !!meta(id)?.usesCameras;
+    const score = pool.filter((id) => meta(id)?.group === 'Score');
+    const cams = pool.filter(isCam);
+    const data = pool.filter((id) => !isCam(id) && meta(id)?.group !== 'Score');
+    const live = score.length + cams.length > 0;
     const share = Math.max(0, Math.min(1, st.autopilot.scoreShare ?? 0.7));
-    const pickScore = !!score.length && (!other.length || this.scorePicks < share * (this.totalPicks + 1));
+    const pickLive = live && (!data.length || this.scorePicks < share * (this.totalPicks + 1));
     this.totalPicks++;
-    if (pickScore) {
+    if (pickLive) {
       this.scorePicks++;
-      return this.take(this.scoreQueue, score, st.scene);
+      // people on stage: every third live cut is a camera shot
+      const camTurn = cams.length > 0 && (!score.length || this.otherPicks++ % 3 === 2);
+      return camTurn ? this.take(this.camQueue, cams, st.scene) : this.take(this.scoreQueue, score, st.scene);
     }
-    // people on stage: alternate camera shots with stats/insights inside the "other" share
-    const camTurn = cams.length > 0 && (!rest.length || this.otherPicks++ % 2 === 0);
-    return camTurn ? this.take(this.camQueue, cams, st.scene) : this.take(this.playlist, rest, st.scene);
+    const groups = DATA_GROUPS.map((g) => data.filter((id) => meta(id)?.group === g)).filter((g) => g.length);
+    if (!groups.length) return this.take(this.playlist, data, st.scene);
+    const rest = groups[this.dataTurn++ % groups.length];
+    const key = meta(rest[0])!.group;
+    if (!this.groupQueues.has(key)) this.groupQueues.set(key, []);
+    return this.take(this.groupQueues.get(key)!, rest, st.scene);
   }
 
   /** shift the next scene off a shuffled queue (refilled from `src`), skipping the scene already on air */
@@ -283,6 +317,7 @@ export class AutomationEngine {
         until: now + plan.ms,
         seq: ++this.overlaySeq,
         priority: plan.priority,
+        variant: this.nextVariant(plan.overlay),
       };
       dirty = true;
       const pinned = st.pinnedUntil > now && !st.autopilot.enabled;
@@ -334,6 +369,7 @@ export class AutomationEngine {
   /** reset the autopilot playlist (e.g. participants or match changed) */
   refreshPlaylist() {
     this.playlist = [];
+    this.groupQueues.clear();
     this.scoreQueue = [];
     this.camQueue = [];
   }

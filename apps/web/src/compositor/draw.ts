@@ -73,6 +73,10 @@ export interface RenderCtx {
   accent: string;
   /** WebGL celebration renderer (null when unsupported) */
   fx3d?: import('./fx3d').Celebration3D | null;
+  /** shared 3D stadium for the 3D scenes, created on first use (null when WebGL is missing) */
+  stage3d?: () => import('./stage3d').Stage3D | null;
+  /** scene is drawn shrunk above the scorebug; the background still fills the frame */
+  inset?: boolean;
 }
 
 /* ---------------- easing / animation ---------------- */

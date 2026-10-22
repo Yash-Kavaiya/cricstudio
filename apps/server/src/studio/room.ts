@@ -194,7 +194,12 @@ export class StudioRoom {
         this.io.to(this.roomName).emit('match:update', detail);
         if (first) {
           first = false;
-          if (this.state.autopilot.enabled) this.commentator.intro(detail, this.state.brand.title);
+          if (this.state.autopilot.enabled) {
+            this.commentator.intro(detail, this.state.brand.title);
+            // open the show on the new match with the 3D fly-in; the rotation carries on after it
+            this.automation.cut('intro3d', { base: true });
+            this.commit();
+          }
         }
         if (events.length) {
           this.io.to(this.roomName).emit('match:events', events);

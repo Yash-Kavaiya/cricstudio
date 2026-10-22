@@ -27,6 +27,8 @@ export type SceneId =
   | 'wagonWheel'
   | 'starPerformer'
   | 'keyMoments'
+  | 'ground3d'
+  | 'intro3d'
   | 'upcomingMatches'
   | 'fanPoll'
   // analysis pack
@@ -57,6 +59,7 @@ export interface SceneMeta {
 
 export const SCENES: SceneMeta[] = [
   { id: 'startingSoon', name: 'Starting Soon', short: 'Starting', group: 'Show', icon: 'schedule', usesCameras: false, hotkey: '1', autopilot: false },
+  { id: 'intro3d', name: 'Match Intro 3D', short: 'Intro 3D', group: 'Show', icon: 'movie', usesCameras: false, autopilot: false },
   { id: 'hostSolo', name: 'Host Solo', short: 'Solo', group: 'Cameras', icon: 'person', usesCameras: true, hotkey: '2', autopilot: true },
   { id: 'panel', name: 'Expert Panel', short: 'Panel', group: 'Cameras', icon: 'groups', usesCameras: true, hotkey: '3', autopilot: true },
   { id: 'commentaryDesk', name: 'Commentary Desk', short: 'Desk', group: 'Cameras', icon: 'mic_external_on', usesCameras: true, hotkey: '4', autopilot: true },
@@ -76,6 +79,7 @@ export const SCENES: SceneMeta[] = [
   { id: 'matchup', name: 'Batter vs Bowler', short: 'Matchup', group: 'Insights', icon: 'swords', usesCameras: false, autopilot: true },
   { id: 'wagonWheel', name: 'Wagon Wheel', short: 'Wagon', group: 'Insights', icon: 'radar', usesCameras: false, autopilot: true },
   { id: 'starPerformer', name: 'Star Performer', short: 'Star', group: 'Insights', icon: 'military_tech', usesCameras: false, autopilot: true },
+  { id: 'ground3d', name: '3D Ground · Wagon Wheel', short: '3D ground', group: 'Insights', icon: 'stadium', usesCameras: false, autopilot: true },
   { id: 'keyMoments', name: 'Key Moments', short: 'Moments', group: 'Insights', icon: 'timeline', usesCameras: false, autopilot: true },
   { id: 'runRateGraph', name: 'Run Rate Graph', short: 'Run rate', group: 'Analysis', icon: 'monitoring', usesCameras: false, autopilot: true },
   { id: 'overHeatmap', name: 'Over-by-Over Heatmap', short: 'Heatmap', group: 'Analysis', icon: 'grid_view', usesCameras: false, autopilot: true },

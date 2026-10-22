@@ -29,6 +29,7 @@ import {
 } from './draw';
 import { ANALYSIS_SCENES } from './analysis';
 import { INSIGHT_SCENES } from './insights';
+import { SCENES_3D } from './scenes3d';
 
 type SceneFn = (rc: RenderCtx) => void;
 
@@ -903,10 +904,15 @@ export const SCENE_DRAW: Record<SceneId, SceneFn> = {
   result,
   ...(INSIGHT_SCENES as Record<string, SceneFn>),
   ...(ANALYSIS_SCENES as Record<string, SceneFn>),
+  ...(SCENES_3D as Record<string, SceneFn>),
 } as Record<SceneId, SceneFn>;
 
 /** Scenes where the persistent scorebug is shown over the picture. */
 export const SCOREBUG_SCENES: SceneId[] = ['hostSolo', 'panel', 'screenShare'];
+/** Show scenes that never carry the scorebug (they have their own big layouts). */
+export const NO_SCOREBUG_SCENES: SceneId[] = ['startingSoon', 'intro3d', 'break', 'message', 'result'];
+/** Data scenes shrink to this scale (anchored top-centre) so the scorebug sits under them. */
+export const INSET_SCALE = 0.82;
 /** Scenes without the bottom ticker. */
-export const NO_TICKER_SCENES: SceneId[] = ['startingSoon', 'result', 'message'];
+export const NO_TICKER_SCENES: SceneId[] = ['startingSoon', 'intro3d', 'result', 'message'];
 

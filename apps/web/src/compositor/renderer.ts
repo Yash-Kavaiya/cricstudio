@@ -1,8 +1,9 @@
 import type { CaptionLine, MatchDetail, MatchListItem, SceneId, StudioState, TransitionId } from '@cricstudio/shared';
 import { H, W, clamp, type RenderCtx, type VideoSource } from './draw';
 import { Celebration3D } from './fx3d';
+import { Stage3D } from './stage3d';
 import { brandBug, captions, eventOverlay, scorebug, ticker } from './overlays';
-import { NO_TICKER_SCENES, SCENE_DRAW, SCOREBUG_SCENES } from './scenes';
+import { INSET_SCALE, NO_SCOREBUG_SCENES, NO_TICKER_SCENES, SCENE_DRAW, SCOREBUG_SCENES } from './scenes';
 import { CAMERA_SCENES, camBubbles } from './camBubbles';
 import { bannerActive, quickScoreBanner, sponsorBanner } from './banners';
 import { applyTheme, withChrome } from './theme';
@@ -63,6 +64,7 @@ export class ProgramRenderer {
   private stop: (() => void) | null = null;
   private lastOverlaySeq = -1;
   private fx3d: Celebration3D | null = null;
+  private stage: Stage3D | null | undefined;
   private frames = 0;
   private fpsWindow = performance.now();
   fps = 0;
@@ -93,6 +95,8 @@ export class ProgramRenderer {
     this.stop = null;
     this.fx3d?.dispose();
     this.fx3d = null;
+    this.stage?.dispose();
+    this.stage = null;
     this.images.clear();
     this.videos.clear();
   }
@@ -148,6 +152,32 @@ export class ProgramRenderer {
     return null;
   };
 
+  /** the scorebug (or a lower banner in its place) is on air over this scene */
+  private barOn(scene: SceneId, rc: RenderCtx) {
+    if (NO_SCOREBUG_SCENES.includes(scene)) return false;
+    if (bannerActive(rc)) return true;
+    const m = this.match;
+    return !!this.state?.brand.showScorebug && !!m?.innings.some((i) => i.number === m.currentInnings);
+  }
+
+  /** data scenes shrink above the bar; full-frame camera shots keep the bar over the picture */
+  private insetOn(scene: SceneId, rc: RenderCtx) {
+    return !SCOREBUG_SCENES.includes(scene) && this.barOn(scene, rc);
+  }
+
+  /** the 3D stadium costs a WebGL context, so it only exists once a 3D scene goes on air */
+  private stage3d = (): Stage3D | null => {
+    if (this.stage === undefined) {
+      try {
+        this.stage = Stage3D.supported() ? new Stage3D() : null;
+      } catch (e) {
+        console.warn('[renderer] 3D ground unavailable', e);
+        this.stage = null;
+      }
+    }
+    return this.stage;
+  };
+
   private rc(ctx: CanvasRenderingContext2D, scene: SceneId, age: number): RenderCtx {
     const s = this.state!;
     const stage = s.participants
@@ -166,12 +196,19 @@ export class ProgramRenderer {
       img: this.img,
       accent: s.brand.accent || '#1a73e8',
       fx3d: this.fx3d,
+      stage3d: this.stage3d,
     };
   }
 
   private drawScene(ctx: CanvasRenderingContext2D, scene: SceneId, age: number) {
     ctx.save();
-    (SCENE_DRAW[scene] ?? SCENE_DRAW.scoreHero)(this.rc(ctx, scene, age));
+    const rc = this.rc(ctx, scene, age);
+    if (this.insetOn(scene, rc)) {
+      rc.inset = true;
+      ctx.translate((W * (1 - INSET_SCALE)) / 2, 12);
+      ctx.scale(INSET_SCALE, INSET_SCALE);
+    }
+    (SCENE_DRAW[scene] ?? SCENE_DRAW.scoreHero)(rc);
     ctx.restore();
   }
 
@@ -210,14 +247,15 @@ export class ProgramRenderer {
       const scene = this.scene;
       withChrome(() => {
         // a lower banner takes the scorebug's place
-        if (s.brand.showScorebug && SCOREBUG_SCENES.includes(scene) && !bannerActive(rc)) scorebug(rc, clamp((age - 300) / 500));
+        const barOn = this.barOn(scene, rc);
+        if (barOn && s.brand.showScorebug && !bannerActive(rc)) scorebug(rc, clamp((age - 300) / 500));
         const tickerOn = s.brand.showTicker && !NO_TICKER_SCENES.includes(scene);
         if (tickerOn) ticker(rc, clamp((age - 200) / 500));
         // bubbles persist across data scenes; they only roll in when they first appear
         const bubblesOn = !!s.brand.camBubbles && !CAMERA_SCENES.includes(scene) && rc.stage.length > 0;
         if (!bubblesOn) this.bubblesSince = null;
         else if (this.bubblesSince === null) this.bubblesSince = now;
-        if (this.bubblesSince !== null) camBubbles(rc, clamp((now - this.bubblesSince - 250) / 700), tickerOn);
+        if (this.bubblesSince !== null) camBubbles(rc, clamp((now - this.bubblesSince - 250) / 700), tickerOn, barOn);
         brandBug(rc);
         captions(rc);
         eventOverlay(rc);
