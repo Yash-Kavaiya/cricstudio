@@ -127,14 +127,15 @@ function bubbleRects(n: number, d: number, corner: CamBubbleCorner, bottomInset:
 }
 
 /** Draws the bubbles; `p` is the 0..1 entrance progress for the current scene. */
-export function camBubbles(rc: RenderCtx, p: number, tickerOn: boolean) {
+export function camBubbles(rc: RenderCtx, p: number, tickerOn: boolean, barOn = false) {
   const { ctx, state, now } = rc;
   const b = state.brand;
   if (!b.camBubbles || p <= 0 || CAMERA_SCENES.includes(state.scene)) return;
   const people = rc.stage.slice(0, 5);
   if (!people.length) return;
   const corner = b.camBubbleCorner ?? 'br';
-  const rects = bubbleRects(people.length, b.camBubbleSize ?? 220, corner, tickerOn ? TICKER_H : 0);
+  // sit above the scorebug / lower banner (its top tab starts at y≈862)
+  const rects = bubbleRects(people.length, b.camBubbleSize ?? 220, corner, barOn ? H - 850 : tickerOn ? TICKER_H : 0);
   const right = corner === 'br' || corner === 'tr';
 
   people.forEach((person, i) => {

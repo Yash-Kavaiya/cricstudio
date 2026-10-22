@@ -4,13 +4,34 @@ import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import opentype from 'opentype.js';
 import type { ActiveOverlay } from '@cricstudio/shared';
+import { playVariant } from './celebrations';
+
+/** Extruded, bevelled 3D text centred on the origin and scaled to fit `maxWidth` units. */
+export function buildTextGeometry(font: opentype.Font, text: string, maxWidth = 12) {
+  const path = font.getPath(text, 0, 0, 100);
+  const sp = new THREE.ShapePath();
+  for (const c of path.commands as any[]) {
+    if (c.type === 'M') sp.moveTo(c.x, -c.y);
+    else if (c.type === 'L') sp.lineTo(c.x, -c.y);
+    else if (c.type === 'Q') sp.quadraticCurveTo(c.x1, -c.y1, c.x, -c.y);
+    else if (c.type === 'C') sp.bezierCurveTo(c.x1, -c.y1, c.x2, -c.y2, c.x, -c.y);
+  }
+  const geo = new THREE.ExtrudeGeometry(sp.toShapes(), { depth: 22, bevelEnabled: true, bevelThickness: 4, bevelSize: 2.5, bevelSegments: 3, curveSegments: 6 });
+  geo.computeBoundingBox();
+  const bb = geo.boundingBox!;
+  geo.translate(-(bb.max.x + bb.min.x) / 2, -(bb.max.y + bb.min.y) / 2, -(bb.max.z + bb.min.z) / 2);
+  const w = bb.max.x - bb.min.x;
+  const s = Math.min(0.05, maxWidth / w);
+  geo.scale(s, s, s);
+  return geo;
+}
 
 const RW = 1280;
 const RH = 720;
 
-type Updater = (t: number, dt: number) => void;
+export type Updater = (t: number, dt: number) => void;
 
-interface Effect {
+export interface Effect {
   seq: number;
   start: number;
   last: number;
@@ -18,10 +39,12 @@ interface Effect {
   updaters: Updater[];
   disposables: { dispose(): void }[];
   shakeUntil: number;
+  /** variant-specific camera move (else a gentle drift); must call lookAt itself */
+  cam?: (t: number, camera: THREE.PerspectiveCamera) => void;
 }
 
 let fontPromise: Promise<opentype.Font | null> | null = null;
-function loadFont() {
+export function loadFont() {
   fontPromise ??= fetch('/fonts/Anton-Regular.ttf')
     .then((r) => r.arrayBuffer())
     .then((b) => opentype.parse(b))
@@ -29,14 +52,14 @@ function loadFont() {
   return fontPromise;
 }
 
-const rand = (a: number, b: number) => a + Math.random() * (b - a);
-const easeOutBack = (t: number) => {
+export const rand = (a: number, b: number) => a + Math.random() * (b - a);
+export const easeOutBack = (t: number) => {
   const c1 = 1.70158;
   const c3 = c1 + 1;
   t = Math.min(1, Math.max(0, t));
   return 1 + c3 * (t - 1) ** 3 + c1 * (t - 1) ** 2;
 };
-const easeOut = (t: number) => 1 - (1 - Math.min(1, Math.max(0, t))) ** 3;
+export const easeOut = (t: number) => 1 - (1 - Math.min(1, Math.max(0, t))) ** 3;
 
 export class Celebration3D {
   readonly canvas: HTMLCanvasElement;
@@ -45,9 +68,9 @@ export class Celebration3D {
   private camera = new THREE.PerspectiveCamera(40, RW / RH, 0.1, 200);
   private font: opentype.Font | null = null;
   private textCache = new Map<string, THREE.BufferGeometry>();
-  private ballTexture: THREE.Texture;
+  readonly ballTexture: THREE.Texture;
   private effect: Effect | null = null;
-  private flash: THREE.PointLight;
+  readonly flash: THREE.PointLight;
 
   static supported(): boolean {
     try {
@@ -125,27 +148,12 @@ export class Celebration3D {
     return t;
   }
 
-  private textGeometry(text: string, maxWidth = 12): THREE.BufferGeometry | null {
+  textGeometry(text: string, maxWidth = 12): THREE.BufferGeometry | null {
     if (!this.font) return null;
     const key = `${text}|${maxWidth}`;
     const hit = this.textCache.get(key);
     if (hit) return hit;
-    const path = this.font.getPath(text, 0, 0, 100);
-    const sp = new THREE.ShapePath();
-    for (const c of path.commands as any[]) {
-      if (c.type === 'M') sp.moveTo(c.x, -c.y);
-      else if (c.type === 'L') sp.lineTo(c.x, -c.y);
-      else if (c.type === 'Q') sp.quadraticCurveTo(c.x1, -c.y1, c.x, -c.y);
-      else if (c.type === 'C') sp.bezierCurveTo(c.x1, -c.y1, c.x2, -c.y2, c.x, -c.y);
-    }
-    const shapes = sp.toShapes();
-    const geo = new THREE.ExtrudeGeometry(shapes, { depth: 22, bevelEnabled: true, bevelThickness: 4, bevelSize: 2.5, bevelSegments: 3, curveSegments: 6 });
-    geo.computeBoundingBox();
-    const bb = geo.boundingBox!;
-    geo.translate(-(bb.max.x + bb.min.x) / 2, -(bb.max.y + bb.min.y) / 2, -(bb.max.z + bb.min.z) / 2);
-    const w = bb.max.x - bb.min.x;
-    const s = Math.min(0.05, maxWidth / w);
-    geo.scale(s, s, s);
+    const geo = buildTextGeometry(this.font, text, maxWidth);
     if (this.textCache.size > 24) {
       const [k, g] = this.textCache.entries().next().value as [string, THREE.BufferGeometry];
       g.dispose();
@@ -157,23 +165,29 @@ export class Celebration3D {
 
   /* ---------------- effect building blocks ---------------- */
 
-  private metal(color: number, emissive = 0x000000, ei = 0.25) {
+  metal(color: number, emissive = 0x000000, ei = 0.25) {
     return new THREE.MeshStandardMaterial({ color, metalness: 0.85, roughness: 0.22, emissive, emissiveIntensity: ei });
   }
 
-  private addText(e: Effect, text: string, mat: THREE.Material, opts: { maxWidth?: number; y?: number; enter: 'zoom' | 'drop' | 'slam' | 'spin' }) {
+  addText(e: Effect, text: string, mat: THREE.Material, opts: { maxWidth?: number; x?: number; y?: number; z?: number; delay?: number; enter: 'zoom' | 'drop' | 'slam' | 'spin' }) {
     const geo = this.textGeometry(text, opts.maxWidth ?? 12);
     if (!geo) return null;
     const mesh = new THREE.Mesh(geo, mat);
     e.disposables.push(mat);
-    mesh.position.y = opts.y ?? 0.6;
+    mesh.position.set(opts.x ?? 0, opts.y ?? 0.6, opts.z ?? 0);
     e.root.add(mesh);
     const y0 = mesh.position.y;
-    e.updaters.push((t) => {
+    const z0 = mesh.position.z;
+    const delay = opts.delay ?? 0;
+    if (delay > 0) mesh.visible = false;
+    e.updaters.push((t0) => {
+      const t = t0 - delay;
+      mesh.visible = t >= 0;
+      if (t < 0) return;
       const k = easeOutBack(t / 0.7);
       switch (opts.enter) {
         case 'zoom':
-          mesh.position.z = -40 * (1 - easeOut(t / 0.7));
+          mesh.position.z = z0 - 40 * (1 - easeOut(t / 0.7));
           mesh.rotation.y = (1 - easeOut(t / 0.9)) * Math.PI * 2;
           break;
         case 'drop':
@@ -183,7 +197,7 @@ export class Celebration3D {
         case 'slam': {
           const s = 1 + 3 * (1 - easeOut(t / 0.35));
           mesh.scale.setScalar(s);
-          if (t < 0.35) mesh.position.z = 8 * (1 - t / 0.35);
+          mesh.position.z = z0 + (t < 0.35 ? 8 * (1 - t / 0.35) : 0);
           break;
         }
         case 'spin':
@@ -199,7 +213,7 @@ export class Celebration3D {
     return mesh;
   }
 
-  private addBall(e: Effect, path: (t: number) => THREE.Vector3 | null, r = 0.7) {
+  addBall(e: Effect, path: (t: number) => THREE.Vector3 | null, r = 0.7) {
     const geo = new THREE.SphereGeometry(r, 48, 32);
     const mat = new THREE.MeshStandardMaterial({ map: this.ballTexture, roughness: 0.35, metalness: 0.1 });
     e.disposables.push(geo, mat);
@@ -228,7 +242,7 @@ export class Celebration3D {
     return ball;
   }
 
-  private addConfetti(e: Effect, colors: number[], count = 260, origin = new THREE.Vector3(0, -2, 0), spread = 1) {
+  addConfetti(e: Effect, colors: number[], count = 260, origin = new THREE.Vector3(0, -2, 0), spread = 1, at = 0) {
     const geo = new THREE.PlaneGeometry(0.16, 0.28);
     const mat = new THREE.MeshStandardMaterial({ side: THREE.DoubleSide, metalness: 0.4, roughness: 0.4 });
     e.disposables.push(geo, mat);
@@ -245,7 +259,10 @@ export class Celebration3D {
     const q = new THREE.Quaternion();
     const one = new THREE.Vector3(1, 1, 1);
     e.root.add(mesh);
-    e.updaters.push((_t, dt) => {
+    mesh.visible = at <= 0;
+    e.updaters.push((t, dt) => {
+      mesh.visible = t >= at;
+      if (t < at) return;
       for (let i = 0; i < count; i++) {
         const pt = parts[i];
         pt.v.y -= 9.8 * dt * 0.9;
@@ -261,7 +278,7 @@ export class Celebration3D {
     });
   }
 
-  private addFirework(e: Effect, at: number, pos: THREE.Vector3, colors: number[], count = 420) {
+  addFirework(e: Effect, at: number, pos: THREE.Vector3, colors: number[], count = 420) {
     const geo = new THREE.BufferGeometry();
     const positions = new Float32Array(count * 3);
     const cols = new Float32Array(count * 3);
@@ -296,13 +313,13 @@ export class Celebration3D {
     });
   }
 
-  private addRing(e: Effect, color: number, opts: { y?: number; tilt?: number; grow?: number } = {}) {
+  addRing(e: Effect, color: number, opts: { x?: number; y?: number; tilt?: number; grow?: number } = {}) {
     const geo = new THREE.TorusGeometry(5, 0.07, 12, 120);
     const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false });
     e.disposables.push(geo, mat);
     const ring = new THREE.Mesh(geo, mat);
     ring.rotation.x = opts.tilt ?? Math.PI / 2.4;
-    ring.position.y = opts.y ?? -1.5;
+    ring.position.set(opts.x ?? 0, opts.y ?? -1.5, 0);
     e.root.add(ring);
     e.updaters.push((t) => {
       const k = (t % 1.6) / 1.6;
@@ -311,7 +328,7 @@ export class Celebration3D {
     });
   }
 
-  private addStumps(e: Effect, hitAt: number) {
+  addStumps(e: Effect, hitAt: number) {
     const wood = new THREE.MeshStandardMaterial({ color: 0xf2dfb4, roughness: 0.55, metalness: 0.05 });
     const stumpGeo = new THREE.CylinderGeometry(0.11, 0.11, 3.6, 24);
     const bailGeo = new THREE.CylinderGeometry(0.06, 0.06, 0.62, 12);
@@ -360,9 +377,13 @@ export class Celebration3D {
     const e: Effect = { seq: o.seq, start: o.startedAt, last: 0, root: new THREE.Group(), updaters: [], disposables: [], shakeUntil: 0 };
     this.effect = e;
     this.scene.add(e.root);
+    this.camera.position.set(0, 0, 16);
+    this.camera.lookAt(0, 0, 0);
     const acc = new THREE.Color(accent).getHex();
     const confettiCols = [0x1a73e8, 0xea4335, 0xfbbc04, 0x34a853, 0xffffff, acc];
     const v = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z);
+    // variant 0 is the original look below; the others live in celebrations.ts
+    if (playVariant(this, e, o, accent)) return true;
     switch (o.id) {
       case 'four': {
         this.flash.color.setHex(0x4c8df6);
@@ -445,11 +466,16 @@ export class Celebration3D {
     for (const u of e.updaters) u(t, dt);
     // impact flash + camera shake
     this.flash.intensity = Math.max(0, 120 * (1 - t / 0.6));
+    if (e.cam) e.cam(t, this.camera);
+    else {
+      this.camera.position.set(Math.sin(t * 0.6) * 0.6, Math.sin(t * 0.4) * 0.25, 16 - Math.min(1.5, t * 0.3));
+      this.camera.lookAt(0, 0, 0);
+    }
     if (t < e.shakeUntil) {
       const k = 1 - t / e.shakeUntil;
-      this.camera.position.set(Math.sin(t * 90) * 0.35 * k, Math.cos(t * 70) * 0.25 * k, 16);
-    } else this.camera.position.set(Math.sin(t * 0.6) * 0.6, Math.sin(t * 0.4) * 0.25, 16 - Math.min(1.5, t * 0.3));
-    this.camera.lookAt(0, 0, 0);
+      this.camera.position.x += Math.sin(t * 90) * 0.35 * k;
+      this.camera.position.y += Math.cos(t * 70) * 0.25 * k;
+    }
     this.renderer.render(this.scene, this.camera);
     return this.canvas;
   }

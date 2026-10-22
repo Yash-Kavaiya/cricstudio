@@ -4,7 +4,7 @@ Go live to **YouTube, Facebook, X and Twitch at the same time**, with:
 
 - **1 host + up to 4 expert guests** over WebRTC.
 - **Real live scores for every match**, from ESPN's free endpoints.
-- **40 broadcast scenes** that switch themselves as the match unfolds, with **3D celebrations**, 11 animated background templates, 10 transitions, cricket sound effects and royalty-free music.
+- **42 broadcast scenes** that switch themselves as the match unfolds (including a **3D ground shot map** and a **3D match intro**), with **3D celebrations** in five rotating looks per event and an animated 3D umpire, 11 animated background templates, 10 transitions, cricket sound effects and royalty-free music.
 - **Auto Live mode**: a host-free show with rotating scenes, auto music and a human-sounding **AI commentator**.
 - **24/7 cloud mode**: a headless producer on the server streams nonstop, survives crashes and restarts, and keeps memory flat.
 
@@ -53,7 +53,7 @@ From there:
 
 ## What's inside
 
-### 40 scenes (hotkeys `1`–`0`)
+### 42 scenes (hotkeys `1`–`0`)
 
 | Group | Scenes |
 |---|---|

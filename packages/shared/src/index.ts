@@ -524,6 +524,8 @@ export interface ActiveOverlay {
   until: number;
   seq: number;
   priority?: number;
+  /** which celebration animation plays (rotates per overlay type so fans never see the same one twice running) */
+  variant?: number;
 }
 
 export interface Suggestion {

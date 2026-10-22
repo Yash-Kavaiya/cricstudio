@@ -1150,5 +1150,9 @@ const DRAW: Record<BackgroundId, (rc: RenderCtx, accent: string) => void> = {
 /** Draw the studio's chosen animated background. `tint` lets a scene nudge the accent glow. */
 export function drawBackground(rc: RenderCtx, tint?: string) {
   const id = rc.state.brand.background ?? 'stadiumNight';
+  const { ctx } = rc;
+  ctx.save();
+  if (rc.inset) ctx.resetTransform(); // full-bleed under a shrunk scene
   (DRAW[id] ?? stadiumNight)(rc, tint ?? rc.accent);
+  ctx.restore();
 }

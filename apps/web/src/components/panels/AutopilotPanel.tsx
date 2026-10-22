@@ -33,7 +33,7 @@ export function AutopilotPanel({ client, hostToken, onGoCloud, hasDestinations }
       <SceneDuration seconds={ap.sceneSeconds} onChange={(v) => patch({ sceneSeconds: v })} />
 
       <Box>
-        <Typography variant="subtitle2">Score focus · {Math.round((ap.scoreShare ?? 0.7) * 100)}% score / {100 - Math.round((ap.scoreShare ?? 0.7) * 100)}% other</Typography>
+        <Typography variant="subtitle2">Score focus · {Math.round((ap.scoreShare ?? 0.7) * 100)}% score / {100 - Math.round((ap.scoreShare ?? 0.7) * 100)}% stats & insights</Typography>
         <Slider
           size="small"
           min={0}
@@ -48,7 +48,7 @@ export function AutopilotPanel({ client, hostToken, onGoCloud, hasDestinations }
           onChangeCommitted={(_, v) => patch({ scoreShare: (v as number) / 100 })}
         />
         <Typography variant="caption" color="text.secondary">
-          Share of cuts that go to Live Score, Ball by Ball, Batting Scorecard and Bowling Figures. The rest rotate through stats, insights, analysis and cameras.
+          Share of cuts that go to Live Score, Ball by Ball, Batting Scorecard, Bowling Figures and (every third one) camera shots. The rest always rotate in turn through stats, insights, analysis and match scenes.
         </Typography>
       </Box>
 
