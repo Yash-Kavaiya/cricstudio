@@ -204,6 +204,8 @@ export class VoiceProcessor {
   private limiter = this.ctx.createDynamicsCompressor();
   private monitorGain = this.ctx.createGain();
   private room: RoomId | null = null;
+  /** Output gain is forced to 0 while muted. The published track stays live. */
+  private muted = false;
 
   constructor(
     input: MediaStreamTrack,
@@ -280,6 +282,12 @@ export class VoiceProcessor {
     return this.fx;
   }
 
+  /** Silence the processed mic without disabling its MediaStreamTrack. */
+  setMuted(muted: boolean) {
+    this.muted = muted;
+    this.apply(this.fx, true);
+  }
+
   /** Update every stage smoothly (no clicks). */
   apply(fx: VoiceFx, immediate = false) {
     this.fx = fx;
@@ -311,8 +319,8 @@ export class VoiceProcessor {
     const mix = fx.room === 'none' ? 0 : fx.roomMix;
     set(this.dry.gain, 1 - mix * 0.5);
     set(this.wet.gain, mix * 1.4);
-    set(this.out.gain, db(fx.gain));
-    set(this.monitorGain.gain, fx.monitor ? 1 : 0);
+    set(this.out.gain, this.muted ? 0 : db(fx.gain));
+    set(this.monitorGain.gain, this.muted || !fx.monitor ? 0 : 1);
   }
 
   stop() {

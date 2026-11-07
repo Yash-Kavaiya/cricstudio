@@ -195,6 +195,8 @@ export class VideoProcessor {
   private keyer: ChromaKeyer | null = null;
   private stopTicker: () => void;
   private stopped = false;
+  /** While paused the canvas keeps painting black so the published capture track never goes mute. */
+  private paused = false;
 
   constructor(
     src: MediaStream,
@@ -230,6 +232,19 @@ export class VideoProcessor {
   setFx(fx: VideoFx) {
     this.fx = fx;
     this.prepare();
+  }
+
+  /** Camera off: stop reading the device, keep emitting frames on `track`. */
+  setPaused(paused: boolean) {
+    this.paused = paused;
+    const src = (this.video.srcObject as MediaStream | null)?.getVideoTracks()[0];
+    if (src && src.readyState === 'live') src.enabled = !paused;
+    if (!paused) void this.video.play().catch(() => undefined);
+  }
+
+  sourceEnded() {
+    const src = (this.video.srcObject as MediaStream | null)?.getVideoTracks()[0];
+    return !src || src.readyState === 'ended';
   }
 
   private prepare() {
@@ -344,8 +359,16 @@ export class VideoProcessor {
   }
 
   private frame() {
+    if (this.stopped) return;
     const v = this.video;
-    if (this.stopped || v.readyState < 2 || !v.videoWidth) return;
+    if (this.paused || v.readyState < 2 || !v.videoWidth) {
+      const ctx = this.ctx;
+      const w = this.out.width || 16;
+      const h = this.out.height || 16;
+      ctx.fillStyle = '#16181d';
+      ctx.fillRect(0, 0, w, h);
+      return;
+    }
     // follow the camera's real frame size (4:3 webcams, rotated phones, resolution changes)
     if (v.videoWidth !== this.out.width || v.videoHeight !== this.out.height) this.resize(v.videoWidth, v.videoHeight);
     const { width: w, height: h } = this.out;

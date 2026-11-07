@@ -27,6 +27,7 @@ import { MeshRTC, type RemoteMedia } from '../rtc/mesh';
 import { VoiceProcessor, browserConstraintsChanged, normalizeVoiceFx, voiceIsolationSupported, type VoiceFx } from '../audio/voiceFx';
 import { VideoProcessor, needsProcessing, normalizeVideoFx, type VideoFx } from '../rtc/videoFx';
 import { LiveKitRTC } from '../rtc/livekit';
+import { blackVideoTrack, silentAudioTrack } from '../rtc/standby';
 import { API_BASE, api } from './api';
 import { prefs } from './storage';
 
@@ -59,7 +60,10 @@ function hiddenVideo(stream: MediaStream, muted = true): HTMLVideoElement {
   v.playsInline = true;
   v.autoplay = true;
   v.srcObject = stream;
-  void v.play().catch(() => undefined);
+  const play = () => void v.play().catch(() => undefined);
+  // A muted sender used to freeze this element. Unmute must start playback again.
+  for (const t of stream.getTracks()) t.addEventListener('unmute', play);
+  play();
   return v;
 }
 
@@ -91,6 +95,12 @@ export class StudioClient {
   videoFx: VideoFx = normalizeVideoFx(prefs.get<Partial<VideoFx> | null>('videoFx', null));
   voiceFx: VoiceFx = normalizeVoiceFx(prefs.get<Partial<VoiceFx> | null>('voiceFx', null));
   screenStream: MediaStream | null = null;
+  /** Explicit mute flags. Track.enabled is not the source of truth — disabling a published track drops the call. */
+  private micMuted = false;
+  private cameraOff = false;
+  private recoveringCamera = false;
+  /** setLocal and mute swaps share one queue so a mute cannot race a republish. */
+  private mediaChain: Promise<void> = Promise.resolve();
   remote = new Map<string, RemoteMedia>();
   peerStates = new Map<string, RTCPeerConnectionState>();
   mediaError: string | null = null;
@@ -197,8 +207,6 @@ export class StudioClient {
   }
 
   async openMedia(d: DeviceChoice = {}) {
-    const wasMuted = this.localStream ? this.isMicMuted() : false;
-    const wasCamOff = this.localStream ? this.isCamOff() : false;
     const { video, voice, ...ids } = d;
     this.devices = { ...this.devices, ...ids };
     if (video) this.saveVideoFx(video);
@@ -245,8 +253,6 @@ export class StudioClient {
     const vId = this.rawStream?.getVideoTracks()[0]?.getSettings().deviceId;
     this.devices = { ...this.devices, audioId: aId ?? audioId, videoId: vId ?? videoId };
     this.buildLocal();
-    if (wasMuted) this.localStream?.getAudioTracks().forEach((t) => (t.enabled = false));
-    if (wasCamOff) this.localStream?.getVideoTracks().forEach((t) => (t.enabled = false));
     this.syncLocalMedia();
     if (this.selfId) this.socket.emit('participant:update', { muted: this.isMicMuted(), camOff: this.isCamOff() });
     this.notify();
@@ -297,15 +303,11 @@ export class StudioClient {
   }
 
   private rebuildLocal() {
-    const muted = this.isMicMuted();
-    const camOff = this.isCamOff();
     this.video?.stop();
     this.video = null;
     this.voice?.stop();
     this.voice = null;
     this.buildLocal();
-    if (muted) this.localStream?.getAudioTracks().forEach((t) => (t.enabled = false));
-    if (camOff) this.localStream?.getVideoTracks().forEach((t) => (t.enabled = false));
     this.syncLocalMedia();
   }
 
@@ -503,8 +505,15 @@ export class StudioClient {
       prev?.screen?.pause();
       this.renderer.videos.set(this.selfId, { cam, screen, mirror: false });
     }
-    if (this.transport) void this.transport.setLocal(this.localStream, this.screenStream);
-    this.syncVoices();
+    this.enqueueMedia(async () => {
+      if (this.transport) await this.transport.setLocal(this.localStream, this.screenStream);
+      this.syncVoices();
+      await this.applyGateNow();
+    });
+  }
+
+  private enqueueMedia(fn: () => Promise<void> | void) {
+    this.mediaChain = this.mediaChain.then(fn).catch((e) => console.warn('[media]', e));
   }
 
   private setRemote(id: string, m: RemoteMedia) {
@@ -523,7 +532,9 @@ export class StudioClient {
       }
       if (a.srcObject !== m.cam) {
         a.srcObject = m.cam;
-        void a.play().catch(() => undefined);
+        const play = () => void a.play().catch(() => undefined);
+        m.cam.getAudioTracks().forEach((t) => t.addEventListener('unmute', play));
+        play();
       }
       // program pages hear voices through the mixer only
       a.muted = this.opts.role === 'program';
@@ -552,7 +563,8 @@ export class StudioClient {
     for (const p of this.state.participants) {
       if (p.role === 'program') continue;
       const stream = p.id === this.selfId ? this.localStream : this.remote.get(p.id)?.cam ?? null;
-      const live = p.onStage && !p.muted;
+      const muted = p.id === this.selfId ? this.micMuted : p.muted;
+      const live = p.onStage && !muted;
       if (stream) {
         this.audio.setVoice(p.id, stream, live ? 1 : 0);
         keep.add(p.id);
@@ -562,27 +574,130 @@ export class StudioClient {
   }
 
   isMicMuted() {
-    const t = this.localStream?.getAudioTracks()[0];
-    return !t || !t.enabled;
+    if (!this.localStream?.getAudioTracks().length) return true;
+    return this.micMuted;
   }
 
   isCamOff() {
-    const t = this.localStream?.getVideoTracks()[0];
-    return !t || !t.enabled;
+    if (!this.localStream?.getVideoTracks().length) return true;
+    return this.cameraOff;
   }
 
   setMuted(muted: boolean) {
-    this.localStream?.getAudioTracks().forEach((t) => (t.enabled = !muted));
-    this.rawStream?.getAudioTracks().forEach((t) => (t.enabled = !muted)); // also silences "hear yourself"
+    this.micMuted = muted;
+    this.enqueueMedia(() => this.applyGateNow());
     this.socket.emit('participant:update', { muted });
+    this.syncVoices();
     this.notify();
   }
 
   setCamOff(off: boolean) {
-    this.localStream?.getVideoTracks().forEach((t) => (t.enabled = !off));
-    this.rawStream?.getVideoTracks().forEach((t) => (t.enabled = !off));
+    this.cameraOff = off;
+    this.enqueueMedia(() => this.applyGateNow());
     this.socket.emit('participant:update', { camOff: off });
     this.notify();
+  }
+
+  /**
+   * Publish silence or black frames on the existing sender.
+   * The camera/mic track stays live, so unmute does not renegotiate or drop ICE.
+   */
+  private async applyGateNow() {
+    this.voice?.setMuted(this.micMuted);
+    if (this.voice) await this.transport?.replaceTrack('audio', this.voice.track);
+    else await this.gateRawAudio();
+
+    if (this.video) {
+      if (!this.cameraOff && this.video.sourceEnded() && !this.recoveringCamera) {
+        await this.recoverCamera();
+        return;
+      }
+      // The processed track is the one on the local stream. Clear any raw-camera hold, then paint black in place.
+      await this.transport?.replaceTrack('video', this.video.track);
+      this.video.setPaused(this.cameraOff);
+      this.resumeLocalPreview();
+      return;
+    }
+    await this.gateRawVideo();
+    this.resumeLocalPreview();
+  }
+
+  /** The local program element can stall after the camera track is disabled and enabled again. */
+  private resumeLocalPreview() {
+    if (this.cameraOff || !this.selfId) return;
+    const el = this.renderer.videos.get(this.selfId)?.cam;
+    if (el) void el.play().catch(() => undefined);
+  }
+
+  private async gateRawAudio() {
+    const mic = this.localStream?.getAudioTracks()[0];
+    if (!mic || !this.transport) return;
+    if (this.micMuted) {
+      await this.transport.replaceTrack('audio', silentAudioTrack());
+      return;
+    }
+    if (mic.readyState === 'ended') return;
+    mic.enabled = true;
+    await this.transport.replaceTrack('audio', mic);
+  }
+
+  private async gateRawVideo() {
+    const device = this.rawStream?.getVideoTracks()[0];
+    const published = this.localStream?.getVideoTracks()[0] ?? device;
+    if (!published || !this.transport) return;
+    if (this.cameraOff) {
+      await this.transport.replaceTrack('video', blackVideoTrack());
+      // The sender is now the black track, so the device can sleep without ending the call.
+      if (device && device.readyState === 'live') device.enabled = false;
+      return;
+    }
+    if (published.readyState === 'ended' || device?.readyState === 'ended') {
+      await this.recoverCamera();
+      return;
+    }
+    if (device) device.enabled = true;
+    published.enabled = true;
+    await this.transport.replaceTrack('video', published);
+  }
+
+  /** The camera device ended (unplug, or a browser that kills a disabled track). Open it again. */
+  private async recoverCamera() {
+    if (this.recoveringCamera) return;
+    this.recoveringCamera = true;
+    try {
+      const vId = this.devices.videoId;
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { deviceId: vId ? { exact: vId } : undefined, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
+        });
+      } catch (e) {
+        if (!vId) throw e;
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
+        });
+      }
+      const track = stream.getVideoTracks()[0];
+      if (!track) return;
+      const old = this.rawStream?.getVideoTracks()[0];
+      if (this.rawStream && old) {
+        this.rawStream.removeTrack(old);
+        old.stop();
+        this.rawStream.addTrack(track);
+      } else {
+        this.rawStream = stream;
+      }
+      const vNow = track.getSettings().deviceId;
+      if (vNow) this.devices = { ...this.devices, videoId: vNow };
+      this.mediaError = null;
+      this.rebuildLocal();
+    } catch (e) {
+      this.mediaError = `Camera unavailable: ${(e as Error).message}`;
+      this.cameraOff = true;
+      this.notify();
+    } finally {
+      this.recoveringCamera = false;
+    }
   }
 
   async toggleScreen() {

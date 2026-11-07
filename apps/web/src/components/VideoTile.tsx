@@ -27,13 +27,19 @@ export function VideoTile({
   connState?: RTCPeerConnectionState;
 }) {
   const ref = useRef<HTMLVideoElement>(null);
-  useEffect(() => {
-    if (ref.current && ref.current.srcObject !== stream) {
-      ref.current.srcObject = stream;
-      void ref.current.play().catch(() => undefined);
-    }
-  }, [stream]);
   const hasVideo = !!stream?.getVideoTracks().length && !p.camOff;
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    if (el.srcObject !== stream) el.srcObject = stream;
+    const play = () => void el.play().catch(() => undefined);
+    play();
+    const tracks = stream?.getVideoTracks() ?? [];
+    for (const t of tracks) t.addEventListener('unmute', play);
+    return () => {
+      for (const t of tracks) t.removeEventListener('unmute', play);
+    };
+  }, [stream, hasVideo]);
   return (
     <Box
       sx={{

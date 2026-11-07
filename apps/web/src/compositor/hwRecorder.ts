@@ -13,8 +13,20 @@ const KEYFRAME_US = 2_000_000; // platforms want a keyframe at least every 2–4
 const AVC_CODEC = 'avc1.640028'; // High profile, level 4.0 (1080p30)
 const MAX_VIDEO_QUEUE = 6; // frames waiting in the encoder before we start dropping
 
-type TrackProcessorCtor = new (o: { track: MediaStreamTrack }) => { readable: ReadableStream<VideoFrame | AudioData> };
+type TrackProcessorCtor = new (o: { track: MediaStreamTrack; maxBufferSize?: number }) => {
+  readable: ReadableStream<VideoFrame | AudioData>;
+};
 const Processor = (globalThis as unknown as { MediaStreamTrackProcessor?: TrackProcessorCtor }).MediaStreamTrackProcessor;
+
+/** Chrome logs and then stalls if a VideoFrame or AudioData is garbage-collected without close(). */
+function closeSample(sample: VideoFrame | AudioData | undefined) {
+  if (!sample) return;
+  try {
+    sample.close();
+  } catch {
+    /* already closed */
+  }
+}
 
 let support: Promise<boolean> | null = null;
 
@@ -64,6 +76,8 @@ class HwSession {
   private written = 0;
   private lastVideoTs = -Infinity; // source clock, µs
   private lastAudioTs = -Infinity;
+  /** moov is written on the second keyframe; the first two frames are keys so ffmpeg sees it immediately */
+  private keysSent = 0;
   dropped = 0;
   /** encoded video frames, for the live fps readout */
   encoded = 0;
@@ -88,9 +102,15 @@ class HwSession {
   }
 
   async start() {
-    const audioFmt = this.audio ? await this.firstAudioFormat() : null;
-    if (this.stopped) return;
+    // Tell the server to drop the old stream before we block on the audio probe. Anything sent
+    // in between is a mid-fragment and would make ffmpeg reject the pipe.
     this.sink.reset('video/mp4;codecs=avc1,opus');
+    if (this.stopped) return;
+    const audioFmt = this.audio ? await this.firstAudioFormat() : null;
+    if (this.stopped) {
+      this.releaseReaders();
+      return;
+    }
     this.muxer = new Muxer({
       target: new StreamTarget({
         // fragmented MP4 is written strictly in order, so `position` only ever moves forward
@@ -107,6 +127,8 @@ class HwSession {
       video: { codec: 'avc', width: W, height: H },
       audio: audioFmt ? { codec: 'opus', sampleRate: audioFmt.sampleRate, numberOfChannels: audioFmt.channels } : undefined,
       fastStart: 'fragmented',
+      // default is 1s, and we only cut on keyframes (every 2s), so moov arrived too late for ffmpeg's probe
+      minFragmentDuration: 0,
       firstTimestampBehavior: 'cross-track-offset',
     });
 
@@ -148,55 +170,91 @@ class HwSession {
   private async firstAudioFormat(): Promise<{ sampleRate: number; channels: number; reader: ReadableStreamDefaultReader<AudioData> } | null> {
     const track = this.audio!.clone();
     this.clones.push(track);
-    const reader = new Processor!({ track }).readable.getReader() as ReadableStreamDefaultReader<AudioData>;
+    const reader = new Processor!({ track, maxBufferSize: 1 }).readable.getReader() as ReadableStreamDefaultReader<AudioData>;
     this.readers.push(reader);
-    const first = await Promise.race([reader.read(), new Promise<null>((r) => setTimeout(() => r(null), 1500))]);
-    if (!first || first.done || !first.value) return null; // silent/absent track → video only
+    const pending = reader.read();
+    const first = await Promise.race([
+      pending.then((r) => r),
+      new Promise<null>((res) => setTimeout(() => res(null), 1500)),
+    ]);
+    if (!first || first.done || !first.value) {
+      // The read can resolve after the timeout. Close that sample; don't leave it for the GC.
+      void pending.then((r) => closeSample(r.value)).catch(() => undefined);
+      void reader.cancel().catch(() => undefined);
+      return null; // silent/absent track → video only
+    }
     const d = first.value;
     const fmt = { sampleRate: d.sampleRate, channels: Math.min(2, d.numberOfChannels) || 1, reader };
-    d.close();
+    closeSample(d);
     return fmt;
   }
 
   private async pumpVideo() {
     const track = this.video.clone();
     this.clones.push(track);
-    const reader = new Processor!({ track }).readable.getReader() as ReadableStreamDefaultReader<VideoFrame>;
+    const reader = new Processor!({ track, maxBufferSize: 1 }).readable.getReader() as ReadableStreamDefaultReader<VideoFrame>;
     this.readers.push(reader);
     try {
       while (!this.stopped) {
         const { value: frame, done } = await reader.read();
         if (done || !frame) break;
-        const venc = this.venc;
-        if (this.stopped || !venc || venc.state !== 'configured') {
-          frame.close();
+        const keepGoing = this.consumeVideo(frame);
+        if (!keepGoing) {
+          await this.drain(reader);
           break;
         }
-        // GPU busy or tab stalled: drop rather than build latency (the next frame is newer anyway)
-        if (venc.encodeQueueSize > MAX_VIDEO_QUEUE) {
-          this.dropped++;
-          frame.close();
-          this.forceKey = true;
-          continue;
-        }
-        // the muxer needs strictly increasing timestamps; capture clocks occasionally step back a few ms
-        if (frame.timestamp <= this.lastVideoTs) {
-          frame.close();
-          continue;
-        }
-        this.lastVideoTs = frame.timestamp;
-        if (this.videoOffset === null) this.videoOffset = this.now() - frame.timestamp;
-        const ts = frame.timestamp + this.videoOffset;
-        const key = this.forceKey || ts - this.lastKey >= KEYFRAME_US;
-        if (key) {
-          this.lastKey = ts;
-          this.forceKey = false;
-        }
-        venc.encode(frame, { keyFrame: key });
-        frame.close();
       }
     } catch (e) {
-      this.fail(`video input: ${(e as Error).message}`);
+      if (!this.stopped) this.fail(`video input: ${(e as Error).message}`);
+    }
+  }
+
+  /** Close `frame` on every path. Returns false when the encoder is gone and the caller should drain. */
+  private consumeVideo(frame: VideoFrame): boolean {
+    const venc = this.venc;
+    try {
+      if (this.stopped || !venc || venc.state !== 'configured') return false;
+      // GPU busy or tab stalled: drop rather than build latency (the next frame is newer anyway)
+      if (venc.encodeQueueSize > MAX_VIDEO_QUEUE) {
+        this.dropped++;
+        this.forceKey = true;
+        return true;
+      }
+      // the muxer needs strictly increasing timestamps; capture clocks occasionally step back a few ms
+      if (frame.timestamp <= this.lastVideoTs) return true;
+      this.lastVideoTs = frame.timestamp;
+      if (this.videoOffset === null) this.videoOffset = this.now() - frame.timestamp;
+      const ts = frame.timestamp + this.videoOffset;
+      const key = this.forceKey || this.keysSent < 2 || ts - this.lastKey >= KEYFRAME_US;
+      if (key) {
+        this.lastKey = ts;
+        this.forceKey = false;
+        this.keysSent++;
+      }
+      try {
+        venc.encode(frame, { keyFrame: key });
+      } catch (e) {
+        this.dropped++;
+        this.forceKey = true;
+        if (venc.state !== 'configured' && !this.stopped) this.fail(`video input: ${(e as Error).message}`);
+        return venc.state === 'configured' && !this.stopped;
+      }
+      return true;
+    } finally {
+      closeSample(frame);
+    }
+  }
+
+  /** Read and close whatever the processor still has queued. Cancelling instead leaks those frames. */
+  private async drain(reader: ReadableStreamDefaultReader<VideoFrame | AudioData>) {
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        closeSample(value);
+      }
+    } catch {
+      /* reader cancelled */
     }
   }
 
@@ -207,40 +265,68 @@ class HwSession {
         if (done || !data) break;
         const aenc = this.aenc;
         if (this.stopped || !aenc || aenc.state !== 'configured') {
-          data.close();
+          closeSample(data);
+          await this.drain(reader);
           break;
         }
-        if (data.timestamp <= this.lastAudioTs) {
-          data.close();
-          continue;
+        try {
+          if (data.timestamp <= this.lastAudioTs) continue;
+          this.lastAudioTs = data.timestamp;
+          if (this.audioOffset === null) this.audioOffset = this.now() - data.timestamp;
+          aenc.encode(data);
+        } catch (e) {
+          if (aenc.state !== 'configured' && !this.stopped) this.fail(`audio input: ${(e as Error).message}`);
+          if (aenc.state !== 'configured' || this.stopped) {
+            await this.drain(reader);
+            break;
+          }
+        } finally {
+          closeSample(data);
         }
-        this.lastAudioTs = data.timestamp;
-        if (this.audioOffset === null) this.audioOffset = this.now() - data.timestamp;
-        aenc.encode(data);
-        data.close();
       }
     } catch (e) {
-      this.fail(`audio input: ${(e as Error).message}`);
+      if (!this.stopped) this.fail(`audio input: ${(e as Error).message}`);
     }
   }
 
   stop() {
     if (this.stopped) return;
     this.stopped = true;
-    for (const r of this.readers) void r.cancel().catch(() => undefined);
-    this.readers = [];
     for (const t of this.clones) t.stop();
     this.clones = [];
-    for (const enc of [this.venc, this.aenc]) {
+    const venc = this.venc;
+    const aenc = this.aenc;
+    this.venc = null;
+    this.aenc = null;
+    this.muxer = null; // the server restarts its encoder on the next init segment; no finalize needed
+    // Let the pump loops close frames already sitting in the readers, then cancel anything left.
+    const readers = this.readers;
+    this.readers = [];
+    setTimeout(() => this.releaseReaders(readers), 200);
+    void this.shutdownEncoders(venc, aenc);
+  }
+
+  private releaseReaders(readers = this.readers) {
+    for (const r of readers) void r.cancel().catch(() => undefined);
+  }
+
+  /** flush() releases frames the encoder still holds. close() without it is what Chrome warns about. */
+  private async shutdownEncoders(venc: VideoEncoder | null, aenc: AudioEncoder | null) {
+    for (const enc of [venc, aenc]) {
+      if (!enc || enc.state === 'closed') continue;
       try {
-        if (enc && enc.state !== 'closed') enc.close();
+        if (enc.state === 'configured') {
+          await Promise.race([enc.flush(), new Promise((res) => setTimeout(res, 400))]);
+        }
+      } catch {
+        /* flush rejects once the encoder has already failed */
+      }
+      try {
+        if (enc.state !== 'closed') enc.close();
       } catch {
         /* already closed */
       }
     }
-    this.venc = null;
-    this.aenc = null;
-    this.muxer = null; // the server restarts its encoder on the next init segment; no finalize needed
   }
 }
 
