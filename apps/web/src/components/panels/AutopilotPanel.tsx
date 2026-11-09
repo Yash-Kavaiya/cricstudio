@@ -68,9 +68,9 @@ export function AutopilotPanel({ client, hostToken, onGoCloud, hasDestinations }
         control={<Switch checked={!!st.brand.camBubbles} onChange={(e) => void client.patch({ brand: { ...st.brand, camBubbles: e.target.checked } })} />}
         label={
           <Box>
-            <Typography variant="body2">Round camera bubbles on all scenes</Typography>
+            <Typography variant="body2">Camera frames on all scenes</Typography>
             <Typography variant="caption" color="text.secondary">
-              Keeps the host & guests on screen as cricket-ball circles over every scoreboard and stats scene. Corner and size are in the Brand tab.
+              Keeps the host and guests on screen over every scene. Shape, size and where they sit are in the Brand tab. Each guest can drag their own frame.
             </Typography>
           </Box>
         }

@@ -1,13 +1,18 @@
 import type { Server, Socket } from 'socket.io';
 import {
   BACKGROUNDS,
+  FONT_PAIRS,
   MAX_GUESTS,
   SCENE_IDS,
   TRANSITIONS,
   VOICES,
+  applyBubblePatch,
+  canEditBubble,
+  sanitizeBubbleFields,
   GNANI_VOICES,
   STT_LANGUAGES,
   type AutopilotSettings,
+  type BubblePatch,
   type ChatMessage,
   type CricketEvent,
   type JoinRequest,
@@ -215,11 +220,27 @@ export function registerSocket(io: Server, studios: StudioManager, hub: MatchHub
           const b = { ...s.brand, ...patch.brand };
           if (!BACKGROUNDS.some((x) => x.id === b.background)) b.background = s.brand.background;
           if (b.transition !== 'mixed' && !TRANSITIONS.some((t) => t.id === b.transition)) b.transition = s.brand.transition;
-          b.camBubbles = !!b.camBubbles;
-          if (!['br', 'bl', 'tr', 'tl'].includes(b.camBubbleCorner as string)) b.camBubbleCorner = s.brand.camBubbleCorner ?? 'br';
-          b.camBubbleSize = Math.round(clampNum(b.camBubbleSize, 120, 400, s.brand.camBubbleSize ?? 220));
+          if (b.fontPair && !FONT_PAIRS.some((f) => f.id === b.fontPair)) b.fontPair = s.brand.fontPair ?? 'theme';
+          const frames = sanitizeBubbleFields(
+            {
+              camBubbles: b.camBubbles,
+              camBubblesAllScenes: b.camBubblesAllScenes,
+              camBubbleCorner: b.camBubbleCorner,
+              camBubbleSize: b.camBubbleSize,
+              camBubbleShape: b.camBubbleShape,
+              camBubbleSlots: b.camBubbleSlots,
+            },
+            {
+              camBubbles: !!s.brand.camBubbles,
+              camBubblesAllScenes: s.brand.camBubblesAllScenes !== false,
+              camBubbleCorner: s.brand.camBubbleCorner ?? 'br',
+              camBubbleSize: s.brand.camBubbleSize ?? 220,
+              camBubbleShape: s.brand.camBubbleShape ?? 'ball',
+              camBubbleSlots: s.brand.camBubbleSlots ?? {},
+            },
+          );
           b.sponsors = Array.isArray(b.sponsors) ? b.sponsors.map((x) => String(x).trim().slice(0, 90)).filter(Boolean).slice(0, 12) : [];
-          s.brand = b;
+          s.brand = { ...b, ...frames };
         }
         if (patch.autopilot) {
           const was = s.autopilot.enabled;
@@ -246,6 +267,29 @@ export function registerSocket(io: Server, studios: StudioManager, hub: MatchHub
         ack({ ok: true });
       }),
     );
+
+    socket.on('studio:bubble', (body: { participantId?: string; patch?: BubblePatch }, ack: Ack = noop) => {
+      const r = room();
+      if (!r) return ack({ ok: false });
+      const me = self();
+      const id = String(body?.participantId ?? '');
+      if (!me || !canEditBubble(me.role, me.id, id)) return ack({ ok: false, error: 'You can only move your own frame' });
+      const person = r.state.participants.find((p) => p.id === id && p.role !== 'program');
+      if (!person) return ack({ ok: false, error: 'Not on this show' });
+      const patch = body?.patch ?? {};
+      r.state.brand = {
+        ...r.state.brand,
+        camBubbleSlots: applyBubblePatch(r.state.brand.camBubbleSlots, id, {
+          x: patch.x,
+          y: patch.y,
+          shape: patch.shape,
+          clearPosition: !!patch.clearPosition,
+          clear: !!patch.clear,
+        }),
+      };
+      r.commit();
+      ack({ ok: true });
+    });
 
     socket.on(
       'studio:stage',

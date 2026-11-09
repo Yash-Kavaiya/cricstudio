@@ -1,10 +1,11 @@
 import type { CaptionLine, MatchDetail, MatchListItem, SceneId, StudioState, TransitionId } from '@cricstudio/shared';
+import { onStagePeople } from '@cricstudio/shared';
 import { H, W, clamp, type RenderCtx, type VideoSource } from './draw';
 import { Celebration3D } from './fx3d';
 import { Stage3D } from './stage3d';
 import { brandBug, captions, eventOverlay, scorebug, ticker } from './overlays';
 import { INSET_SCALE, NO_SCOREBUG_SCENES, NO_TICKER_SCENES, SCENE_DRAW, SCOREBUG_SCENES } from './scenes';
-import { CAMERA_SCENES, camBubbles } from './camBubbles';
+import { bubblesVisible, camBubbles } from './camBubbles';
 import { bannerActive, quickScoreBanner, sponsorBanner } from './banners';
 import { applyTheme, withChrome } from './theme';
 import { TRANSITION_MS, drawTransition } from './transitions';
@@ -13,24 +14,66 @@ const MAX_IMAGES = 160;
 
 /** Timer that keeps ticking in background tabs (workers aren't throttled like rAF). */
 export function workerTicker(fps: number, cb: () => void) {
-  const src = `let t=setInterval(()=>postMessage(0),${Math.round(1000 / fps)});onmessage=e=>{if(e.data==='stop'){clearInterval(t);close()}}`;
+  const interval = 1000 / fps;
+  // drift-corrected timeout, not setInterval(33): 33 ms is 30.3 Hz and Windows' 15.6 ms timer
+  // quantises it further, which is how the program settled around 25 fps
+  const src = `const interval=${interval};let next=Date.now()+interval;let stopped=false;function tick(){if(stopped)return;postMessage(0);const now=Date.now();next+=interval;if(now-next>interval)next=now+interval;setTimeout(tick,Math.max(0,next-Date.now()))}setTimeout(tick,interval);onmessage=e=>{if(e.data==='stop'){stopped=true;close()}}`;
   const url = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
   const w = new Worker(url);
   // after a main-thread stall the queued ticks arrive in a burst; drawing them all only produces
-  // frames nobody sees and steals CPU from the video encoder. A deadline schedule drops the burst
-  // but tolerates normal jitter (a tick up to half a frame early still runs).
-  const interval = 1000 / fps;
-  let next = 0;
+  // frames nobody sees and steals CPU from the video encoder. Keep one tick per slot.
+  let last = -Infinity;
   w.onmessage = () => {
     const now = performance.now();
-    if (now < next - interval * 0.5) return;
-    next = Math.max(next + interval, now + interval * 0.75);
+    if (now - last < interval * 0.5) return;
+    last = now;
     cb();
   };
   return () => {
     w.postMessage('stop');
     URL.revokeObjectURL(url);
   };
+}
+
+const paintHooks = new WeakMap<HTMLCanvasElement, Set<() => void>>();
+
+/** Deliver a frame to this track on every paint of `canvas`. Clones need their own requestFrame. */
+export function watchCapture(track: MediaStreamTrack, canvas?: HTMLCanvasElement) {
+  const cap = track as CanvasCaptureMediaStreamTrack;
+  const host = canvas ?? cap.canvas;
+  if (!host || typeof cap.requestFrame !== 'function') return;
+  let hooks = paintHooks.get(host);
+  if (!hooks) {
+    hooks = new Set();
+    paintHooks.set(host, hooks);
+  }
+  const pull = () => {
+    if (cap.readyState === 'live') cap.requestFrame();
+  };
+  hooks.add(pull);
+  cap.addEventListener('ended', () => hooks!.delete(pull));
+}
+
+/**
+ * One captured frame per paint. captureStream(30) drops a frame painted slightly early,
+ * which silently cost ~15% of frames against a 30 Hz ticker.
+ */
+export function bindProgramCapture(canvas: HTMLCanvasElement): MediaStreamTrack {
+  const track = canvas.captureStream(0).getVideoTracks()[0];
+  watchCapture(track, canvas);
+  return track;
+}
+
+function notifyPaint(canvas: HTMLCanvasElement) {
+  const hooks = paintHooks.get(canvas);
+  if (!hooks) return;
+  for (const fn of hooks) {
+    try {
+      fn();
+    } catch {
+      /* track already ended */
+    }
+  }
 }
 
 function offscreen() {
@@ -180,9 +223,7 @@ export class ProgramRenderer {
 
   private rc(ctx: CanvasRenderingContext2D, scene: SceneId, age: number): RenderCtx {
     const s = this.state!;
-    const stage = s.participants
-      .filter((p) => p.onStage && p.role !== 'program')
-      .sort((a, b) => (a.role === 'host' ? -1 : b.role === 'host' ? 1 : a.joinedAt - b.joinedAt));
+    const stage = onStagePeople(s.participants);
     return {
       ctx,
       now: performance.now(),
@@ -222,17 +263,17 @@ export class ProgramRenderer {
       this.frames = 0;
       this.fpsWindow = t0;
     }
-    if (!s || !this.scene) {
-      ctx.fillStyle = '#0b1020';
-      ctx.fillRect(0, 0, W, H);
-      return;
-    }
-    const now = performance.now();
-    const age = now - this.sceneStart;
-    const dur = TRANSITION_MS[this.transition] ?? 750;
-    const t = clamp(age / dur);
     try {
-      applyTheme(s.brand.background, s.brand.accent || '#1a73e8');
+      if (!s || !this.scene) {
+        ctx.fillStyle = '#0b1020';
+        ctx.fillRect(0, 0, W, H);
+        return;
+      }
+      const now = performance.now();
+      const age = now - this.sceneStart;
+      const dur = TRANSITION_MS[this.transition] ?? 750;
+      const t = clamp(age / dur);
+      applyTheme(s.brand.background, s.brand.accent || '#1a73e8', s.brand.fontPair ?? 'theme');
       if (this.prevScene && t < 1) {
         const a = this.frameA.getContext('2d')!;
         const b = this.frameB.getContext('2d')!;
@@ -252,10 +293,10 @@ export class ProgramRenderer {
         const tickerOn = s.brand.showTicker && !NO_TICKER_SCENES.includes(scene);
         if (tickerOn) ticker(rc, clamp((age - 200) / 500));
         // bubbles persist across data scenes; they only roll in when they first appear
-        const bubblesOn = !!s.brand.camBubbles && !CAMERA_SCENES.includes(scene) && rc.stage.length > 0;
+        const bubblesOn = bubblesVisible(s);
         if (!bubblesOn) this.bubblesSince = null;
         else if (this.bubblesSince === null) this.bubblesSince = now;
-        if (this.bubblesSince !== null) camBubbles(rc, clamp((now - this.bubblesSince - 250) / 700), tickerOn, barOn);
+        if (this.bubblesSince !== null) camBubbles(rc, clamp((now - this.bubblesSince - 250) / 700));
         brandBug(rc);
         captions(rc);
         eventOverlay(rc);
@@ -266,8 +307,10 @@ export class ProgramRenderer {
     } catch (e) {
       // never let a bad data shape kill the stream
       console.error('[renderer]', e);
+    } finally {
+      const spent = performance.now() - t0;
+      this.frameMs = this.frameMs ? this.frameMs * 0.95 + spent * 0.05 : spent;
+      notifyPaint(this.canvas);
     }
-    const spent = performance.now() - t0;
-    this.frameMs = this.frameMs ? this.frameMs * 0.95 + spent * 0.05 : spent;
   }
 }

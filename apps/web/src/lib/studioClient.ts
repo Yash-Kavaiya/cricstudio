@@ -1,4 +1,5 @@
 import { io, type Socket } from 'socket.io-client';
+import { applyBubblePatch, canEditBubble, type BubblePatch } from '@cricstudio/shared';
 import type {
   CaptionLine,
   ChatMessage,
@@ -139,6 +140,8 @@ export class StudioClient {
   private listeners = new Set<Listener>();
   private matchesTimer: number | null = null;
   private notifyQueued = false;
+  /** frame being dragged; kept on the canvas if a studio snapshot arrives mid-drag */
+  private bubbleHold: { id: string; x: number; y: number } | null = null;
 
   constructor(readonly opts: ClientOptions) {
     const base = opts.apiBase ?? API_BASE;
@@ -485,6 +488,7 @@ export class StudioClient {
     const prev = this.state;
     this.state = st;
     this.renderer.setState(st);
+    if (this.bubbleHold) this.pushBubbleHold();
     this.audio.applyMusic(st.music);
     this.audio.sfxVolume = st.brand.sfxVolume;
     this.syncVoices();
@@ -815,6 +819,42 @@ export class StudioClient {
   }
   patch(p: Partial<StudioState>) {
     return this.emit('studio:patch', p);
+  }
+
+  /** Move or restyle one person's frame. A guest can only change their own. */
+  setBubble(participantId: string, patch: BubblePatch) {
+    if (!this.canEditFrame(participantId)) return Promise.reject(new Error('You can only move your own frame'));
+    if (this.state) {
+      const slots = applyBubblePatch(this.state.brand.camBubbleSlots, participantId, patch);
+      const next = { ...this.state, brand: { ...this.state.brand, camBubbleSlots: slots } };
+      this.state = next;
+      this.renderer.setState(next);
+      if (this.bubbleHold) this.pushBubbleHold();
+      this.notify();
+    }
+    return this.emit('studio:bubble', { participantId, patch });
+  }
+
+  /** Live position while dragging. Saved on pointer up. */
+  holdBubble(participantId: string, x: number, y: number) {
+    if (!this.canEditFrame(participantId)) return;
+    this.bubbleHold = { id: participantId, x, y };
+    this.pushBubbleHold();
+  }
+
+  releaseBubble(participantId: string, x: number, y: number) {
+    this.bubbleHold = null;
+    return this.setBubble(participantId, { x, y });
+  }
+
+  private canEditFrame(participantId: string) {
+    return canEditBubble(this.opts.role, this.selfId, participantId);
+  }
+
+  private pushBubbleHold() {
+    if (!this.state || !this.bubbleHold) return;
+    const slots = applyBubblePatch(this.state.brand.camBubbleSlots, this.bubbleHold.id, { x: this.bubbleHold.x, y: this.bubbleHold.y });
+    this.renderer.setState({ ...this.state, brand: { ...this.state.brand, camBubbleSlots: slots } });
   }
   overlay(o: { id?: OverlayId; title: string; subtitle?: string; ms?: number; sfx?: SfxId } | null) {
     return this.emit('studio:overlay', o);

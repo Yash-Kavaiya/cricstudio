@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
-import { Alert, Box, Button, ButtonBase, Divider, FormControlLabel, MenuItem, Slider, Stack, Switch, TextField, ToggleButton, ToggleButtonGroup, Typography } from '@mui/material';
-import { BACKGROUNDS, TRANSITIONS, type CamBubbleCorner } from '@cricstudio/shared';
+import { Box, Button, ButtonBase, Divider, FormControlLabel, MenuItem, Stack, Switch, TextField, Tooltip, Typography } from '@mui/material';
+import { BACKGROUNDS, FONT_PAIRS, TRANSITIONS } from '@cricstudio/shared';
+import type { FontPairId } from '@cricstudio/shared';
+import { BubbleSettings } from './BubbleSettings';
 import { CaptionsSettings } from './CaptionsSettings';
 import type { StudioClient } from '../../lib/studioClient';
 import { Icon } from '../Icon';
@@ -44,6 +46,77 @@ export function BrandPanel({ client, hostToken }: { client: StudioClient; hostTo
             />
           ))}
         </Stack>
+      </Box>
+      {/* ── Font picker ─────────────────────────────────── */}
+      <Box>
+        <Typography variant="caption" color="text.secondary">
+          Broadcast font
+        </Typography>
+        <Box
+          sx={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(3, 1fr)',
+            gap: 1,
+            mt: 0.5,
+          }}
+        >
+          {FONT_PAIRS.map((pair) => {
+            const active = (b.fontPair ?? 'theme') === pair.id;
+            return (
+              <Tooltip key={pair.id} title={pair.style} placement="top" arrow>
+                <ButtonBase
+                  onClick={() => patchBrand({ fontPair: pair.id as FontPairId })}
+                  sx={{
+                    flexDirection: 'column',
+                    alignItems: 'flex-start',
+                    p: '8px 10px',
+                    borderRadius: 2,
+                    border: '1.5px solid',
+                    borderColor: active ? 'primary.main' : 'divider',
+                    bgcolor: active ? 'primary.main' : 'background.paper',
+                    color: active ? 'primary.contrastText' : 'text.primary',
+                    transition: 'border-color 0.15s, background-color 0.15s',
+                    '&:hover': { borderColor: 'primary.light' },
+                    overflow: 'hidden',
+                    gap: 0.25,
+                    width: '100%',
+                  }}
+                >
+                  <Typography
+                    component="span"
+                    sx={{
+                      fontFamily: pair.cond,
+                      fontWeight: 700,
+                      fontSize: 18,
+                      lineHeight: 1.1,
+                      color: 'inherit',
+                      letterSpacing: '-0.02em',
+                    }}
+                  >
+                    {pair.preview}
+                  </Typography>
+                  <Typography
+                    component="span"
+                    sx={{
+                      fontFamily: pair.sans,
+                      fontWeight: 500,
+                      fontSize: 10,
+                      lineHeight: 1.2,
+                      color: active ? 'primary.contrastText' : 'text.secondary',
+                      textAlign: 'left',
+                      maxWidth: '100%',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {pair.name}
+                  </Typography>
+                </ButtonBase>
+              </Tooltip>
+            );
+          })}
+        </Box>
       </Box>
       <FormControlLabel control={<Switch checked={b.showScorebug} onChange={(e) => patchBrand({ showScorebug: e.target.checked })} />} label="Scorebug on camera scenes" />
       <Box>
@@ -102,58 +175,7 @@ export function BrandPanel({ client, hostToken }: { client: StudioClient; hostTo
       <TextField label="Fan poll question" value={b.pollQuestion} onChange={(e) => patchBrand({ pollQuestion: e.target.value })} />
       <FormControlLabel control={<Switch checked={b.showTicker} onChange={(e) => patchBrand({ showTicker: e.target.checked })} />} label="Bottom ticker (other live scores)" />
       <Divider />
-      <Box>
-        <FormControlLabel
-          control={<Switch checked={!!b.camBubbles} onChange={(e) => patchBrand({ camBubbles: e.target.checked })} />}
-          label={
-            <Box>
-              <Typography variant="body2">Round camera bubbles on every scene</Typography>
-              <Typography variant="caption" color="text.secondary">
-                Host & guests on stage appear as cricket-ball circles over scoreboards, stats and analysis (camera scenes keep their full-size tiles).
-              </Typography>
-            </Box>
-          }
-          sx={{ alignItems: 'flex-start', mx: 0 }}
-        />
-        {b.camBubbles && (
-          <Stack spacing={1} sx={{ mt: 1, pl: 1 }}>
-            <Stack direction="row" alignItems="center" spacing={1.5}>
-              <Typography variant="caption" color="text.secondary" sx={{ width: 56 }}>
-                Corner
-              </Typography>
-              <ToggleButtonGroup
-                size="small"
-                exclusive
-                value={b.camBubbleCorner ?? 'br'}
-                onChange={(_, v: CamBubbleCorner | null) => v && patchBrand({ camBubbleCorner: v })}
-              >
-                <ToggleButton value="tl">Top left</ToggleButton>
-                <ToggleButton value="tr">Top right</ToggleButton>
-                <ToggleButton value="bl">Bottom left</ToggleButton>
-                <ToggleButton value="br">Bottom right</ToggleButton>
-              </ToggleButtonGroup>
-            </Stack>
-            <Stack direction="row" alignItems="center" spacing={1.5}>
-              <Typography variant="caption" color="text.secondary" sx={{ width: 56 }}>
-                Size
-              </Typography>
-              <Slider
-                size="small"
-                min={120}
-                max={400}
-                step={10}
-                defaultValue={b.camBubbleSize ?? 220}
-                valueLabelDisplay="auto"
-                valueLabelFormat={(v) => `${v}px`}
-                onChangeCommitted={(_, v) => patchBrand({ camBubbleSize: v as number })}
-              />
-            </Stack>
-            {!client.state?.participants.some((p) => p.onStage && p.role !== 'program') && (
-              <Alert severity="info">Add the host or a guest to the stage to see the bubbles.</Alert>
-            )}
-          </Stack>
-        )}
-      </Box>
+      <BubbleSettings client={client} />
       <Divider />
       <CaptionsSettings client={client} hostToken={hostToken} />
       <Divider />

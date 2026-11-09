@@ -182,8 +182,8 @@ const intro3d: SceneFn = (rc) => {
     ctx.drawImage(st.canvas, 0, 0, W, H);
     ctx.restore();
   }
-  // cinematic letterbox bars
-  const bar = 90 * (1 - easeOut((age - 3600) / 900));
+  // bars stay through the aerial and open once the camera is on the pitch
+  const bar = 90 * (1 - easeOut((age - 4400) / 800));
   if (bar > 0.5) {
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, W, bar);

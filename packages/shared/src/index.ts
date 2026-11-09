@@ -1,7 +1,9 @@
 // Shared domain types for CricStudio (server <-> web contract).
 
 export * from './scenes';
-import type { BackgroundId, SceneId, TransitionId } from './scenes';
+export * from './bubbles';
+import type { CamBubbleCorner, CamBubbleShape, CamBubbleSlot } from './bubbles';
+import type { BackgroundId, FontPairId, SceneId, TransitionId } from './scenes';
 
 /* ------------------------------------------------------------------ */
 /* Cricket data                                                        */
@@ -318,14 +320,22 @@ export interface Branding {
   background: BackgroundId;
   /** transition used for manual cuts ('mixed' = vary automatically) */
   transition: TransitionId | 'mixed';
+  /** font pair override for the broadcast canvas; 'theme' = use the background theme's default */
+  fontPair?: FontPairId;
   /** use WebGL 3D celebrations (falls back to 2D automatically) */
   fx3d: boolean;
   pollQuestion: string;
-  /** round "cricket ball" camera bubbles for the host & guests on every non-camera scene */
+  /** camera frames for the host and guests */
   camBubbles?: boolean;
+  /** also draw frames on scenes that already show the cameras full size */
+  camBubblesAllScenes?: boolean;
   camBubbleCorner?: CamBubbleCorner;
-  /** bubble diameter in program pixels (1920×1080) */
+  /** frame diameter in program pixels (1920×1080); wide and stump frames scale from this */
   camBubbleSize?: number;
+  /** shape used when a person has not picked their own */
+  camBubbleShape?: CamBubbleShape;
+  /** per participant id: position anywhere on the program, and an optional shape */
+  camBubbleSlots?: Record<string, CamBubbleSlot>;
   /** lines for the sponsor banner, shown one after another */
   sponsors?: string[];
 }
@@ -336,8 +346,6 @@ export interface Banner {
   /** when it went on air (ms) */
   since: number;
 }
-
-export type CamBubbleCorner = 'br' | 'bl' | 'tr' | 'tl';
 
 export interface AutopilotSettings {
   /** run the show without a host: rotate scenes, music, AI commentary */

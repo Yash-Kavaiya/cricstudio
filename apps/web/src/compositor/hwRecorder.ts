@@ -1,17 +1,20 @@
 // Hardware program encoder: WebCodecs H.264 on the GPU (Intel Quick Sync / NVENC / AMF via Chrome)
-// + Opus audio, muxed to fragmented MP4 and streamed to the server, which passes the H.264 through
-// untouched exactly like the MediaRecorder path. On a typical laptop MediaRecorder tops out around
-// 25 fps at 1080p (software x264-class encoder sharing the CPU with the compositor); the GPU encoder
-// keeps a steady 30 fps with CPU to spare.
+// + Opus audio, muxed to fragmented MP4 and streamed to the server, which passes the H.264 through.
+// Frames are encoded on a fixed 30 Hz clock. If a paint runs long, the previous picture is encoded
+// again so YouTube still receives 30 fps instead of whatever rate the compositor managed.
 import { Muxer, StreamTarget } from 'mp4-muxer';
+import { FRAME_US, OUTPUT_FPS, cfrPlan, frameTimestampUs } from './cfr';
+import { workerTicker } from './renderer';
 import type { RecorderSink } from './recorder';
 
 const W = 1920;
 const H = 1080;
-const FPS = 30;
-const KEYFRAME_US = 2_000_000; // platforms want a keyframe at least every 2–4 s
+const FPS = OUTPUT_FPS;
+const KEYFRAME_FRAMES = FPS * 2; // platforms want a keyframe at least every 2–4 s
 const AVC_CODEC = 'avc1.640028'; // High profile, level 4.0 (1080p30)
 const MAX_VIDEO_QUEUE = 6; // frames waiting in the encoder before we start dropping
+/** catch-up duplicates after a hitch; longer stalls snap to now so latency stays bounded */
+const MAX_BURST = 8;
 
 type TrackProcessorCtor = new (o: { track: MediaStreamTrack; maxBufferSize?: number }) => {
   readable: ReadableStream<VideoFrame | AudioData>;
@@ -69,13 +72,17 @@ class HwSession {
   /** per-session clones: cancelling a track processor ends its track, so never hand it the shared ones */
   private clones: MediaStreamTrack[] = [];
   private readonly t0 = performance.now();
-  private videoOffset: number | null = null; // µs: our clock − source clock
+  private videoOffset: number | null = 0; // frames are already stamped on the session clock
   private audioOffset: number | null = null;
-  private lastKey = -Infinity;
+  private lastKeyIndex = -KEYFRAME_FRAMES;
   private forceKey = true;
   private written = 0;
-  private lastVideoTs = -Infinity; // source clock, µs
   private lastAudioTs = -Infinity;
+  /** next CFR frame index to encode */
+  private frameIndex = 0;
+  /** first tick starts at "now" so the audio probe does not become a burst of past frames */
+  private clockArmed = false;
+  private stopClock: (() => void) | null = null;
   /** moov is written on the second keyframe; the first two frames are keys so ffmpeg sees it immediately */
   private keysSent = 0;
   dropped = 0;
@@ -83,7 +90,7 @@ class HwSession {
   encoded = 0;
 
   constructor(
-    private readonly video: MediaStreamTrack,
+    private readonly canvas: HTMLCanvasElement,
     private readonly audio: MediaStreamTrack | null,
     private readonly sink: RecorderSink,
     private readonly videoBps: number,
@@ -123,8 +130,8 @@ class HwSession {
           this.sink.chunk(copy.buffer);
         },
       }),
-      // no frameRate here: it would set a 1/30 s timescale and round jittery frames onto the same tick
-      video: { codec: 'avc', width: W, height: H },
+      // 30 Hz timescale. Timestamps are exact multiples of 1/30 s, so ticks do not collapse.
+      video: { codec: 'avc', width: W, height: H, frameRate: FPS },
       audio: audioFmt ? { codec: 'opus', sampleRate: audioFmt.sampleRate, numberOfChannels: audioFmt.channels } : undefined,
       fastStart: 'fragmented',
       // default is 1s, and we only cut on keyframes (every 2s), so moov arrived too late for ffmpeg's probe
@@ -147,6 +154,7 @@ class HwSession {
     venc.configure(videoConfig(this.videoBps));
     this.venc = venc;
 
+    this.stopClock = workerTicker(FPS, () => this.emitDue());
     if (audioFmt) {
       const aenc = new AudioEncoder({
         output: (chunk, meta) => {
@@ -163,7 +171,21 @@ class HwSession {
       this.aenc = aenc;
       void this.pumpAudio(audioFmt.reader);
     }
-    void this.pumpVideo();
+  }
+
+  /** Snapshot the program canvas. A late paint repeats the pixels already there, at the next 30 Hz slot. */
+  private grab(index: number): VideoFrame | null {
+    if (this.canvas.width < 2 || this.canvas.height < 2) return null;
+    try {
+      return new VideoFrame(this.canvas, {
+        timestamp: frameTimestampUs(index),
+        duration: Math.round(FRAME_US),
+        alpha: 'discard',
+      });
+    } catch (e) {
+      if (!this.stopped) this.fail(`video input: ${(e as Error).message}`);
+      return null;
+    }
   }
 
   /** Reads one AudioData to learn the real sample rate / channel count, then keeps reading from it. */
@@ -189,59 +211,53 @@ class HwSession {
     return fmt;
   }
 
-  private async pumpVideo() {
-    const track = this.video.clone();
-    this.clones.push(track);
-    const reader = new Processor!({ track, maxBufferSize: 1 }).readable.getReader() as ReadableStreamDefaultReader<VideoFrame>;
-    this.readers.push(reader);
-    try {
-      while (!this.stopped) {
-        const { value: frame, done } = await reader.read();
-        if (done || !frame) break;
-        const keepGoing = this.consumeVideo(frame);
-        if (!keepGoing) {
-          await this.drain(reader);
-          break;
-        }
-      }
-    } catch (e) {
-      if (!this.stopped) this.fail(`video input: ${(e as Error).message}`);
+  /** Encode every CFR slot that wall-clock time says is due. A slow paint repeats the current canvas. */
+  private emitDue() {
+    const venc = this.venc;
+    if (this.stopped || !venc || venc.state !== 'configured') return;
+    const elapsedUs = (performance.now() - this.t0) * 1000;
+    if (!this.clockArmed) {
+      this.clockArmed = true;
+      this.frameIndex = Math.max(0, Math.floor(elapsedUs / FRAME_US + 1e-6));
     }
+    const plan = cfrPlan(elapsedUs, this.frameIndex, MAX_BURST);
+    if (plan.encode === 0) return;
+    if (plan.startIndex !== this.frameIndex) this.forceKey = true;
+    for (let i = 0; i < plan.encode; i++) {
+      if (this.stopped) break;
+      this.encodeAt(plan.startIndex + i);
+    }
+    this.frameIndex = plan.nextIndex;
   }
 
-  /** Close `frame` on every path. Returns false when the encoder is gone and the caller should drain. */
-  private consumeVideo(frame: VideoFrame): boolean {
+  private encodeAt(index: number) {
     const venc = this.venc;
+    if (!venc || venc.state !== 'configured') return;
+    if (venc.encodeQueueSize > MAX_VIDEO_QUEUE) {
+      this.dropped++;
+      this.forceKey = true;
+      return;
+    }
+    const stamped = this.grab(index);
+    if (!stamped) {
+      this.dropped++;
+      this.forceKey = true;
+      return;
+    }
+    const key = this.forceKey || this.keysSent < 2 || index - this.lastKeyIndex >= KEYFRAME_FRAMES;
+    if (key) {
+      this.lastKeyIndex = index;
+      this.forceKey = false;
+      this.keysSent++;
+    }
     try {
-      if (this.stopped || !venc || venc.state !== 'configured') return false;
-      // GPU busy or tab stalled: drop rather than build latency (the next frame is newer anyway)
-      if (venc.encodeQueueSize > MAX_VIDEO_QUEUE) {
-        this.dropped++;
-        this.forceKey = true;
-        return true;
-      }
-      // the muxer needs strictly increasing timestamps; capture clocks occasionally step back a few ms
-      if (frame.timestamp <= this.lastVideoTs) return true;
-      this.lastVideoTs = frame.timestamp;
-      if (this.videoOffset === null) this.videoOffset = this.now() - frame.timestamp;
-      const ts = frame.timestamp + this.videoOffset;
-      const key = this.forceKey || this.keysSent < 2 || ts - this.lastKey >= KEYFRAME_US;
-      if (key) {
-        this.lastKey = ts;
-        this.forceKey = false;
-        this.keysSent++;
-      }
-      try {
-        venc.encode(frame, { keyFrame: key });
-      } catch (e) {
-        this.dropped++;
-        this.forceKey = true;
-        if (venc.state !== 'configured' && !this.stopped) this.fail(`video input: ${(e as Error).message}`);
-        return venc.state === 'configured' && !this.stopped;
-      }
-      return true;
+      venc.encode(stamped, { keyFrame: key });
+    } catch (e) {
+      this.dropped++;
+      this.forceKey = true;
+      if (venc.state !== 'configured' && !this.stopped) this.fail(`video input: ${(e as Error).message}`);
     } finally {
-      closeSample(frame);
+      closeSample(stamped);
     }
   }
 
@@ -292,6 +308,8 @@ class HwSession {
   stop() {
     if (this.stopped) return;
     this.stopped = true;
+    this.stopClock?.();
+    this.stopClock = null;
     for (const t of this.clones) t.stop();
     this.clones = [];
     const venc = this.venc;
@@ -322,7 +340,7 @@ class HwSession {
         /* flush rejects once the encoder has already failed */
       }
       try {
-        if (enc.state !== 'closed') enc.close();
+        enc.close();
       } catch {
         /* already closed */
       }
@@ -333,19 +351,16 @@ class HwSession {
 /** Same contract as ProgramRecorder (start / restart / stop), backed by the GPU encoder. */
 export class HwProgramRecorder {
   private session: HwSession | null = null;
-  private readonly video: MediaStreamTrack;
   private readonly audio: MediaStreamTrack | null;
   bytesSent = 0;
 
   constructor(
-    canvas: HTMLCanvasElement,
+    private readonly canvas: HTMLCanvasElement,
     audio: MediaStream | null,
     private readonly sink: RecorderSink,
     private readonly onFail: (why: string) => void,
     private readonly videoBps = 6_000_000,
   ) {
-    // no rate cap: captureStream(30) drops any frame painted slightly sooner than 33.3 ms after the last
-    this.video = canvas.captureStream().getVideoTracks()[0];
     this.audio = audio?.getAudioTracks()[0] ?? null;
   }
 
@@ -371,7 +386,7 @@ export class HwProgramRecorder {
   start() {
     this.session?.stop();
     const s = new HwSession(
-      this.video,
+      this.canvas,
       this.audio,
       this.sink,
       this.videoBps,
@@ -402,6 +417,5 @@ export class HwProgramRecorder {
 
   dispose() {
     this.stop();
-    this.video.stop();
   }
 }

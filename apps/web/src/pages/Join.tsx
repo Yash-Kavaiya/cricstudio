@@ -4,7 +4,9 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { ControlBar } from '../components/ControlBar';
 import { GreenRoom } from '../components/GreenRoom';
 import { Logo } from '../components/Logo';
+import { BubbleDrag } from '../components/BubbleDrag';
 import { ProgramCanvas } from '../components/ProgramCanvas';
+import { BubbleSettings } from '../components/panels/BubbleSettings';
 import { VideoTile } from '../components/VideoTile';
 import { ChatPanel } from '../components/panels/ChatPanel';
 import { api } from '../lib/api';
@@ -81,7 +83,14 @@ function GuestRoom({ client: c, onLeave }: { client: StudioClient; onLeave: () =
       <Box sx={{ flex: 1, minHeight: 0, display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 340px' }, gap: 2, p: 2 }}>
         <Stack spacing={2} sx={{ minWidth: 0, overflow: 'auto' }}>
           <Box sx={{ maxWidth: 'calc((100vh - 330px) * 16 / 9)', width: '100%', mx: 'auto' }}>
-            <ProgramCanvas renderer={client.renderer} live={live && !!me?.onStage} />
+            <ProgramCanvas renderer={client.renderer} live={live && !!me?.onStage}>
+              {me && <BubbleDrag client={client} onlyId={me.id} />}
+            </ProgramCanvas>
+            {me && (
+              <Box sx={{ p: 1.5, bgcolor: 'background.paper', borderRadius: 2, border: 1, borderColor: 'divider' }}>
+                <BubbleSettings client={client} onlyId={me.id} />
+              </Box>
+            )}
           </Box>
           <Stack direction="row" spacing={1.5} sx={{ overflowX: 'auto', justifyContent: 'center' }}>
             {people.map((p) => (

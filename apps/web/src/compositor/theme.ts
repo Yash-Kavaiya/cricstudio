@@ -1,6 +1,7 @@
 // Design themes: every background id also carries a full look — palette, typography, card
 // shape and title treatment — applied to the shared drawing tokens before each frame.
 import type { BackgroundId } from '@cricstudio/shared';
+import { FONT_PAIRS, type FontPairId } from '@cricstudio/shared';
 import { COL, FONT, THEME, type TitleStyle } from './draw';
 
 type Palette = Partial<typeof COL>;
@@ -159,21 +160,30 @@ function warmFonts(font: ThemeStyle['font']) {
 
 let current: string | null = null;
 let currentAccent = '';
+let currentFont: FontPairId = 'theme';
 
 /** Point the drawing tokens at the theme for this background (cheap when nothing changed). */
-export function applyTheme(id: BackgroundId | undefined, accent: string) {
-  if (id === current && accent === currentAccent) return;
+export function applyTheme(id: BackgroundId | undefined, accent: string, fontPair: FontPairId = 'theme') {
+  if (id === current && accent === currentAccent && fontPair === currentFont) return;
   current = id ?? null;
   currentAccent = accent;
+  currentFont = fontPair;
   const st = (id && STYLES[id]) || {};
   Object.assign(COL, BASE_COL, st.col);
-  Object.assign(FONT, BASE_FONT, st.font);
+
+  // Font resolution: explicit pair > theme style > base
+  const pair = fontPair !== 'theme' ? FONT_PAIRS.find((p) => p.id === fontPair) : null;
+  const resolvedFont = pair
+    ? { sans: pair.sans, cond: pair.cond }
+    : st.font ?? BASE_FONT;
+  Object.assign(FONT, BASE_FONT, resolvedFont);
+
   Object.assign(THEME, BASE_THEME, { shadow: BASE_THEME.shadow ? { ...BASE_THEME.shadow } : null }, st.card, {
     light: !!st.light,
     title: st.title ?? 'bar',
     accent,
   });
-  warmFonts(st.font);
+  warmFonts(resolvedFont);
 }
 
 /**

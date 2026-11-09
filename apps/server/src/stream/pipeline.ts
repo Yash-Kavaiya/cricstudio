@@ -17,8 +17,16 @@ export function rtmpUrl(t: Pick<StreamTarget, 'url' | 'key'>): string {
 }
 
 /**
- * Encoder: browser WebM → H.264/AAC MPEG-TS on stdout. Timestamps continue across restarts.
- * When the browser already sends H.264 (Chrome MediaRecorder), video is passed through untouched
+ * The GPU recorder muxes constant-30fps H.264 in fragmented MP4. Copy that.
+ * MediaRecorder WebM is variable-rate (often ~25 fps); re-encode it so YouTube gets 30.
+ */
+export function preferVideoCopy(mime: string): boolean {
+  return /mp4/i.test(mime) && /h264|avc1/i.test(mime);
+}
+
+/**
+ * Encoder: browser WebM/fMP4 → H.264/AAC MPEG-TS on stdout. Timestamps continue across restarts.
+ * When the browser already sends CFR H.264, video is passed through untouched
  * (`copy`) — only audio is converted to AAC. That removes ~90% of server CPU for 24/7 shows.
  */
 export function encoderArgs(tsOffsetSec: number, opts = config, videoCopy = false): string[] {
@@ -42,7 +50,8 @@ export function encoderArgs(tsOffsetSec: number, opts = config, videoCopy = fals
     '-mpegts_flags', '+resend_headers',
     'pipe:1',
   ];
-  if (videoCopy) return [...head, '-c:v', 'copy', '-bsf:v', 'h264_mp4toannexb', ...tail];
+  // passthrough: the default fps mode guesses 25 fps when the input rate is unset and drops frames
+  if (videoCopy) return [...head, '-fps_mode', 'passthrough', '-c:v', 'copy', '-bsf:v', 'h264_mp4toannexb', ...tail];
   return [
     ...head,
     '-c:v', 'libx264',
@@ -50,7 +59,7 @@ export function encoderArgs(tsOffsetSec: number, opts = config, videoCopy = fals
     '-tune', 'zerolatency',
     '-profile:v', 'high',
     '-pix_fmt', 'yuv420p',
-    '-x264-params', 'repeat-headers=1',
+    '-x264-params', 'repeat-headers=1:force-cfr=1',
     '-vf', 'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2',
     '-r', '30',
     '-fps_mode', 'cfr',
@@ -75,6 +84,7 @@ export function relayArgs(url: string): string[] {
     '-map', '0:v:0',
     '-map', '0:a:0?',
     '-c', 'copy',
+    '-fps_mode', 'passthrough',
     '-bsf:a', 'aac_adtstoasc',
     '-avoid_negative_ts', 'make_zero',
     '-flvflags', 'no_duration_filesize',
@@ -242,7 +252,7 @@ export class LivePipeline extends EventEmitter {
   resetIngest(mime?: string) {
     if (this.stopped) return;
     // no mime = internal restart (e.g. backlog): keep the current mode instead of falling back to x264
-    const copy = mime ? /h264|avc1/i.test(mime) : this.videoCopy;
+    const copy = mime ? preferVideoCopy(mime) : this.videoCopy;
     const modeChanged = copy !== this.videoCopy;
     this.videoCopy = copy;
     if (this.encBytes === 0 && !modeChanged && this.encoder) {

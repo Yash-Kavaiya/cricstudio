@@ -1,9 +1,20 @@
+import type { ReactNode } from 'react';
 import { useEffect, useRef } from 'react';
 import { Box } from '@mui/material';
 import type { ProgramRenderer } from '../compositor/renderer';
 
 /** Mounts the renderer's 1920x1080 canvas, scaled responsively at 16:9. */
-export function ProgramCanvas({ renderer, rounded = true, live = false }: { renderer: ProgramRenderer; rounded?: boolean; live?: boolean }) {
+export function ProgramCanvas({
+  renderer,
+  rounded = true,
+  live = false,
+  children,
+}: {
+  renderer: ProgramRenderer;
+  rounded?: boolean;
+  live?: boolean;
+  children?: ReactNode;
+}) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const el = ref.current;
@@ -20,7 +31,6 @@ export function ProgramCanvas({ renderer, rounded = true, live = false }: { rend
   }, [renderer]);
   return (
     <Box
-      ref={ref}
       sx={{
         position: 'relative',
         width: '100%',
@@ -31,6 +41,9 @@ export function ProgramCanvas({ renderer, rounded = true, live = false }: { rend
         boxShadow: live ? '0 0 0 3px #ea4335' : rounded ? 3 : 0,
         transition: 'box-shadow .3s',
       }}
-    />
+    >
+      <Box ref={ref} sx={{ position: 'absolute', inset: 0 }} />
+      {children}
+    </Box>
   );
 }

@@ -194,6 +194,133 @@ export const BACKGROUNDS: BackgroundMeta[] = [
   { id: 'seamLines', name: 'Ball Seam', colors: ['#2a0606', '#b91c1c'], group: 'Studio' },
 ];
 
+/* ---------------- font pairs ---------------- */
+
+/**
+ * Curated font pairings for the broadcast canvas.
+ * All fonts are loaded from Google Fonts in index.html (OFL / Apache 2 licensed, free for commercial use).
+ * 'theme' = let the current background theme choose its own fonts (default behaviour).
+ */
+export type FontPairId =
+  | 'theme'
+  | 'roboto'
+  | 'barlow'
+  | 'poppins'
+  | 'inter'
+  | 'oswald'
+  | 'saira'
+  | 'figtree'
+  | 'sourceSerif'
+  | 'notoSans'
+  | 'bigShoulders';
+
+export interface FontPairMeta {
+  id: FontPairId;
+  name: string;
+  /** label shown in the preview swatch */
+  preview: string;
+  /** body / UI font */
+  sans: string;
+  /** condensed / headline font */
+  cond: string;
+  /** short style note shown under the name */
+  style: string;
+}
+
+const f = (...names: string[]) =>
+  [...names.map((n) => `"${n}"`), 'Roboto', 'Arial', 'sans-serif'].join(', ');
+
+export const FONT_PAIRS: FontPairMeta[] = [
+  {
+    id: 'theme',
+    name: 'Theme default',
+    preview: 'Aa',
+    sans: f('Roboto'),
+    cond: f('Roboto Condensed'),
+    style: 'Follows the active background theme',
+  },
+  {
+    id: 'roboto',
+    name: 'Roboto',
+    preview: 'Aa',
+    sans: f('Roboto'),
+    cond: f('Roboto Condensed'),
+    style: 'Clean · modern · versatile',
+  },
+  {
+    id: 'barlow',
+    name: 'Barlow',
+    preview: 'Aa',
+    sans: f('Barlow'),
+    cond: f('Barlow Condensed'),
+    style: 'Sporty · broadcast-ready',
+  },
+  {
+    id: 'poppins',
+    name: 'Poppins',
+    preview: 'Aa',
+    sans: f('Poppins'),
+    cond: f('Barlow Condensed'),
+    style: 'Round · friendly · punchy',
+  },
+  {
+    id: 'inter',
+    name: 'Inter',
+    preview: 'Aa',
+    sans: f('Inter'),
+    cond: f('Barlow Condensed'),
+    style: 'Neutral · screen-optimised',
+  },
+  {
+    id: 'oswald',
+    name: 'Oswald',
+    preview: 'Aa',
+    sans: f('Oswald'),
+    cond: f('Oswald'),
+    style: 'Tall · bold · classic sports',
+  },
+  {
+    id: 'saira',
+    name: 'Saira',
+    preview: 'Aa',
+    sans: f('Saira Condensed'),
+    cond: f('Saira Condensed'),
+    style: 'Narrow · high-impact headlines',
+  },
+  {
+    id: 'figtree',
+    name: 'Figtree',
+    preview: 'Aa',
+    sans: f('Figtree'),
+    cond: f('Barlow Condensed'),
+    style: 'Geometric · contemporary',
+  },
+  {
+    id: 'sourceSerif',
+    name: 'Source Serif',
+    preview: 'Aa',
+    sans: f('Barlow'),
+    cond: f('Source Serif 4'),
+    style: 'Editorial · premium feel',
+  },
+  {
+    id: 'notoSans',
+    name: 'Noto Sans',
+    preview: 'Aa',
+    sans: f('Noto Sans'),
+    cond: f('Barlow Condensed'),
+    style: 'Universal · multi-language',
+  },
+  {
+    id: 'bigShoulders',
+    name: 'Big Shoulders',
+    preview: 'Aa',
+    sans: f('Barlow'),
+    cond: f('Big Shoulders Display'),
+    style: 'Ultra-wide · stadium energy',
+  },
+];
+
 export type TransitionId = 'fadeZoom' | 'slideLeft' | 'wipeDiagonal' | 'circleReveal' | 'blinds' | 'flip3d' | 'pushUp' | 'stingerBall' | 'glitch' | 'zoomBlur';
 
 export const TRANSITIONS: { id: TransitionId; name: string }[] = [

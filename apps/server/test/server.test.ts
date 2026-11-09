@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { CricketEvent, StudioState } from '@cricstudio/shared';
 import { AutomationEngine } from '../src/automation/rules';
 import { defaultState } from '../src/studio/room';
-import { encoderArgs, relayArgs, rtmpUrl } from '../src/stream/pipeline';
+import { encoderArgs, preferVideoCopy, relayArgs, rtmpUrl } from '../src/stream/pipeline';
 import { decrypt, encrypt, hashToken, maskKey, tokenMatches } from '../src/store/crypto';
 
 describe('live pipeline args', () => {
@@ -12,12 +12,26 @@ describe('live pipeline args', () => {
     expect(args[args.indexOf('-output_ts_offset') + 1]).toBe('42.500');
     expect(args[args.indexOf('-f', args.indexOf('-c:a')) + 1]).toBe('mpegts');
     expect(args.at(-1)).toBe('pipe:1');
-    expect(args.join(' ')).toContain('repeat-headers=1');
+    expect(args.join(' ')).toContain('repeat-headers=1:force-cfr=1');
+    expect(args[args.indexOf('-r') + 1]).toBe('30');
+    expect(args[args.indexOf('-fps_mode') + 1]).toBe('cfr');
+  });
+  it('copied H.264 is not resampled to ffmpeg\'s 25 fps default', () => {
+    const args = encoderArgs(1, undefined, true);
+    expect(args).toContain('copy');
+    expect(args).not.toContain('libx264');
+    expect(args[args.indexOf('-fps_mode') + 1]).toBe('passthrough');
+  });
+  it('only the GPU fMP4 stream is passed through', () => {
+    expect(preferVideoCopy('video/mp4;codecs=avc1,opus')).toBe(true);
+    expect(preferVideoCopy('video/webm;codecs=h264,opus')).toBe(false);
+    expect(preferVideoCopy('video/webm;codecs=vp9,opus')).toBe(false);
   });
   it('relay copies TS to one RTMP url with flv', () => {
     const args = relayArgs('rtmps://live-api-s.facebook.com:443/rtmp/key');
     expect(args).toContain('copy');
     expect(args).toContain('aac_adtstoasc');
+    expect(args[args.indexOf('-fps_mode') + 1]).toBe('passthrough');
     expect(args.at(-1)).toBe('rtmps://live-api-s.facebook.com:443/rtmp/key');
   });
   it('joins url and key', () => {

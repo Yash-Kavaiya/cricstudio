@@ -28,6 +28,7 @@ import { ControlBar } from '../components/ControlBar';
 import { GreenRoom } from '../components/GreenRoom';
 import { Icon } from '../components/Icon';
 import { Logo } from '../components/Logo';
+import { BubbleDrag } from '../components/BubbleDrag';
 import { ProgramCanvas } from '../components/ProgramCanvas';
 import { SceneRail } from '../components/SceneRail';
 import { VideoTile } from '../components/VideoTile';
@@ -249,7 +250,9 @@ function StudioRoom({ client: c, hostToken, programToken, onLeave }: { client: S
             </Typography>
             <RenderStats renderer={client.renderer} encoder={client.encoderKind} sampleEncoderFps={sampleEncFps} />
           </Stack>
-          <ProgramCanvas renderer={client.renderer} live={live} />
+          <ProgramCanvas renderer={client.renderer} live={live}>
+            <BubbleDrag client={client} />
+          </ProgramCanvas>
           <Box sx={{ bgcolor: 'background.paper', borderRadius: 2, border: 1, borderColor: 'divider', px: 1.5, pt: 1, pb: 1.5 }}>
             <Stack direction="row" alignItems="center" sx={{ mb: 1 }}>
               <Typography variant="overline" color="text.secondary" sx={{ flex: 1, lineHeight: 1.6 }}>

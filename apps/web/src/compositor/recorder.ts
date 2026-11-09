@@ -1,3 +1,5 @@
+import { bindProgramCapture } from './renderer';
+
 const MIME_CANDIDATES = [
   'video/webm;codecs=h264,opus',
   'video/webm;codecs=avc1,opus',
@@ -32,10 +34,9 @@ export class ProgramRecorder {
     private readonly sink: RecorderSink,
     private readonly videoBps = 6_000_000,
   ) {
-    // no rate cap: captureStream(30) drops any frame painted slightly sooner than 33.3 ms after the
-    // last one, which silently cost ~15% of frames with our 33 ms ticker; the renderer paces at 30 fps
-    const v = canvas.captureStream();
-    this.stream = new MediaStream([...v.getVideoTracks(), ...(audio?.getAudioTracks() ?? [])]);
+    // manual capture: a numeric frameRate drops paints that land slightly early
+    const video = bindProgramCapture(canvas);
+    this.stream = new MediaStream([video, ...(audio?.getAudioTracks() ?? [])]);
   }
 
   get running() {

@@ -4,6 +4,7 @@
 import * as THREE from 'three';
 import opentype from 'opentype.js';
 import { buildTextGeometry, loadFont } from './fx3d';
+import { introPose } from './introCamera';
 
 const RW = 1280;
 const RH = 720;
@@ -302,7 +303,7 @@ export class Stage3D {
     return { labels };
   }
 
-  /** Cinematic match intro: aerial sweep down to the pitch, team names rise in 3D. */
+  /** Cinematic match intro: the aerial, then down through the open middle onto the pitch. */
   renderIntro(a: { abbr: string; color: string }, b: { abbr: string; color: string }, age: number) {
     const t = age / 1000;
     const key = `${a.abbr}|${a.color}|${b.abbr}|${b.color}|${this.font ? 1 : 0}`;
@@ -312,20 +313,23 @@ export class Stage3D {
     }
     this.arcs.visible = false;
     this.names.visible = true;
+    this.bobCrowd(t, 1);
+    for (const bm of this.beams) (bm.material as THREE.MeshBasicMaterial).opacity = 0.05 + 0.03 * Math.sin(t * 3);
+    const pose = introPose(t);
+    this.camera.position.set(pose.x, pose.y, pose.z);
+    this.camera.lookAt(pose.tx, pose.ty, pose.tz);
+    // Names play over the aerial, then clear so the held shot is the pitch.
+    const nameFade = t < 4.05 ? 1 : Math.max(0, 1 - (t - 4.05) / 1.05);
     for (const p of this.nameParts) {
       const k = easeOutBack((t - p.delay) / 0.7);
-      p.mesh.visible = t > p.delay;
+      p.mesh.visible = t > p.delay && nameFade > 0.02;
       p.mesh.scale.setScalar(Math.max(0.001, k));
       p.mesh.quaternion.copy(this.camera.quaternion);
       p.mesh.position.y = 3.2 + Math.sin(t * 1.5 + p.delay) * 0.12;
+      const mat = p.mesh.material as THREE.MeshStandardMaterial;
+      mat.opacity = nameFade;
+      mat.transparent = nameFade < 0.999;
     }
-    this.bobCrowd(t, 1);
-    for (const bm of this.beams) (bm.material as THREE.MeshBasicMaterial).opacity = 0.05 + 0.03 * Math.sin(t * 3);
-    const p = easeOut(t / 3.2);
-    const ang = -1.4 + p * 1.4 + Math.sin(t * 0.2) * 0.08;
-    const r = 40 - 22 * p;
-    this.camera.position.set(Math.sin(ang) * r, 28 - 21 * p, Math.cos(ang) * r);
-    this.camera.lookAt(0, 1.6 * p, 0);
     this.renderer.render(this.scene, this.camera);
   }
 
