@@ -179,18 +179,29 @@ export class ProgramRenderer {
   private img = (url?: string): HTMLImageElement | null => {
     if (!url) return null;
     const c = this.images.get(url);
-    if (c instanceof HTMLImageElement) return c;
+    if (c instanceof HTMLImageElement) {
+      // LRU: images drawn every frame (team logos) stay; only ones that went off air get evicted.
+      // Map keeps insertion order, so re-inserting moves this one to the newest end.
+      this.images.delete(url);
+      this.images.set(url, c);
+      return c;
+    }
     if (c) return null;
     if (this.images.size >= MAX_IMAGES) {
-      // bounded cache for 24/7 runs: drop the oldest entry
+      // bounded cache for 24/7 runs: drop the least recently drawn entry
       const first = this.images.keys().next().value;
       if (first) this.images.delete(first);
     }
     this.images.set(url, 'loading');
     const im = new Image();
     im.crossOrigin = 'anonymous'; // ESPN CDN sends ACAO:* — keeps canvas untainted for captureStream
-    im.onload = () => this.images.set(url, im);
-    im.onerror = () => this.images.set(url, 'error');
+    // only fill a slot that still exists: an evicted in-flight load must not grow the cache past its cap
+    im.onload = () => {
+      if (this.images.has(url)) this.images.set(url, im);
+    };
+    im.onerror = () => {
+      if (this.images.has(url)) this.images.set(url, 'error');
+    };
     im.src = url;
     return null;
   };
