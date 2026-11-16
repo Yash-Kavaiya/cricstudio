@@ -87,54 +87,94 @@ const destFromRow = (r: any): DestinationRecord => ({
   createdAt: Number(r.created_at),
 });
 
+/** studios with `wantLive` get an indexed flag so the 24/7 resume loop never scans settings JSON */
+const wantsLive = (settings: string) => (settings.includes('"wantLive":true') ? 1 : 0);
+const LIVE_SQL = 'SELECT id FROM studios WHERE want_live = 1';
+const LIVE_INDEX = 'CREATE INDEX IF NOT EXISTS studios_want_live ON studios(want_live) WHERE want_live = 1';
+const BACKFILL_LIVE = `UPDATE studios SET want_live = 1 WHERE settings LIKE '%"wantLive":true%'`;
+
+const STUDIO_COLS = { name: 'name', matchKey: 'match_key', settings: 'settings' } as const;
+const DEST_COLS = { name: 'name', url: 'url', keyEnc: 'key_enc', enabled: 'enabled' } as const;
+
+/** `a=?, b=?` for just the fields present in `patch` — one UPDATE, no read-modify-write round trip. */
+export function setClause(patch: object, cols: Record<string, string>, ph: (i: number) => string) {
+  const p = patch as Record<string, unknown>;
+  const sets: string[] = [];
+  const args: (string | number | null)[] = [];
+  const add = (col: string, v: unknown) => {
+    args.push(typeof v === 'boolean' ? (v ? 1 : 0) : (v as string | number | null));
+    sets.push(`${col}=${ph(args.length)}`);
+  };
+  for (const [k, col] of Object.entries(cols)) if (p[k] !== undefined) add(col, p[k]);
+  if ('settings' in cols && typeof p.settings === 'string') add('want_live', wantsLive(p.settings));
+  return { sql: sets.join(', '), args };
+}
+
 /** Zero-dependency default store using Node's built-in SQLite (node >= 22.13). */
 export async function createSqliteRepo(file = resolve(config.dataDir, 'cricstudio.db')): Promise<Repo> {
   const { DatabaseSync } = await import('node:sqlite');
   const db = new DatabaseSync(file);
-  db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
+  db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 5000;');
   db.exec(SCHEMA);
+  const cols = db.prepare('PRAGMA table_info(studios)').all() as { name: string }[];
+  if (!cols.some((c) => c.name === 'want_live')) {
+    db.exec('ALTER TABLE studios ADD COLUMN want_live INTEGER NOT NULL DEFAULT 0');
+    db.exec(BACKFILL_LIVE);
+  }
+  db.exec(LIVE_INDEX);
+
+  // prepared once and reused — db.prepare() parses and plans the SQL on every call otherwise
+  const stmts = new Map<string, ReturnType<typeof db.prepare>>();
+  const q = (sql: string) => {
+    let st = stmts.get(sql);
+    if (!st) stmts.set(sql, (st = db.prepare(sql)));
+    return st;
+  };
 
   return {
     async createStudio(s) {
-      db.prepare(
-        `INSERT INTO studios (id,name,match_key,host_token_hash,guest_token_hash,program_token_hash,guest_token_enc,settings,created_at)
-         VALUES (?,?,?,?,?,?,?,?,?)`,
-      ).run(s.id, s.name, s.matchKey, s.hostTokenHash, s.guestTokenHash, s.programTokenHash, s.guestTokenEnc, s.settings, s.createdAt);
+      q(
+        `INSERT INTO studios (id,name,match_key,host_token_hash,guest_token_hash,program_token_hash,guest_token_enc,settings,created_at,want_live)
+         VALUES (?,?,?,?,?,?,?,?,?,?)`,
+      ).run(s.id, s.name, s.matchKey, s.hostTokenHash, s.guestTokenHash, s.programTokenHash, s.guestTokenEnc, s.settings, s.createdAt, wantsLive(s.settings));
     },
     async getStudio(id) {
-      const r = db.prepare('SELECT * FROM studios WHERE id = ?').get(id);
+      const r = q('SELECT * FROM studios WHERE id = ?').get(id);
       return r ? studioFromRow(r) : null;
     },
     async listLiveStudios() {
-      return db
-        .prepare(`SELECT id FROM studios WHERE settings LIKE '%"wantLive":true%'`)
+      return q(LIVE_SQL)
         .all()
         .map((r: any) => String(r.id));
     },
     async updateStudio(id, patch) {
-      const cur = db.prepare('SELECT * FROM studios WHERE id = ?').get(id);
-      if (!cur) return;
-      const s = { ...studioFromRow(cur), ...patch };
-      db.prepare('UPDATE studios SET name=?, match_key=?, settings=? WHERE id=?').run(s.name, s.matchKey, s.settings, id);
+      const { sql, args } = setClause(patch, STUDIO_COLS, () => '?');
+      if (sql) q(`UPDATE studios SET ${sql} WHERE id=?`).run(...args, id);
     },
     async listDestinations(studioId) {
-      return db.prepare('SELECT * FROM destinations WHERE studio_id = ? ORDER BY created_at').all(studioId).map(destFromRow);
+      return q('SELECT * FROM destinations WHERE studio_id = ? ORDER BY created_at').all(studioId).map(destFromRow);
     },
     async addDestination(d) {
-      db.prepare(
-        'INSERT INTO destinations (id,studio_id,platform,name,url,key_enc,enabled,created_at) VALUES (?,?,?,?,?,?,?,?)',
-      ).run(d.id, d.studioId, d.platform, d.name, d.url, d.keyEnc, d.enabled ? 1 : 0, d.createdAt);
+      q('INSERT INTO destinations (id,studio_id,platform,name,url,key_enc,enabled,created_at) VALUES (?,?,?,?,?,?,?,?)').run(
+        d.id,
+        d.studioId,
+        d.platform,
+        d.name,
+        d.url,
+        d.keyEnc,
+        d.enabled ? 1 : 0,
+        d.createdAt,
+      );
     },
     async updateDestination(id, studioId, patch) {
-      const cur = db.prepare('SELECT * FROM destinations WHERE id = ? AND studio_id = ?').get(id, studioId);
-      if (!cur) return;
-      const d = { ...destFromRow(cur), ...patch };
-      db.prepare('UPDATE destinations SET name=?, url=?, key_enc=?, enabled=? WHERE id=?').run(d.name, d.url, d.keyEnc, d.enabled ? 1 : 0, id);
+      const { sql, args } = setClause(patch, DEST_COLS, () => '?');
+      if (sql) q(`UPDATE destinations SET ${sql} WHERE id=? AND studio_id=?`).run(...args, id, studioId);
     },
     async deleteDestination(id, studioId) {
-      db.prepare('DELETE FROM destinations WHERE id = ? AND studio_id = ?').run(id, studioId);
+      q('DELETE FROM destinations WHERE id = ? AND studio_id = ?').run(id, studioId);
     },
     async close() {
+      stmts.clear();
       db.close();
     },
   };
@@ -143,16 +183,25 @@ export async function createSqliteRepo(file = resolve(config.dataDir, 'cricstudi
 /** Postgres store for multi-instance deployments (DATABASE_URL=postgres://...). */
 export async function createPgRepo(url: string): Promise<Repo> {
   const { default: pg } = await import('pg');
-  const pool = new pg.Pool({ connectionString: url, max: 10 });
+  const pool = new pg.Pool({ connectionString: url, max: Number(process.env.PG_POOL_MAX) || 10, idleTimeoutMillis: 30_000 });
+  // an idle client dropped by the database or a proxy must not crash the whole process
+  pool.on('error', (e) => console.warn('[pg] idle client error:', e.message));
   await pool.query(SCHEMA);
+  const { rows } = await pool.query(`SELECT 1 FROM information_schema.columns WHERE table_name = 'studios' AND column_name = 'want_live'`);
+  if (!rows.length) {
+    await pool.query('ALTER TABLE studios ADD COLUMN IF NOT EXISTS want_live INTEGER NOT NULL DEFAULT 0');
+    await pool.query(BACKFILL_LIVE);
+  }
+  await pool.query(LIVE_INDEX);
   const one = async (sql: string, args: unknown[]) => (await pool.query(sql, args)).rows[0];
+  const ph = (i: number) => `$${i}`;
 
   return {
     async createStudio(s) {
       await pool.query(
-        `INSERT INTO studios (id,name,match_key,host_token_hash,guest_token_hash,program_token_hash,guest_token_enc,settings,created_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-        [s.id, s.name, s.matchKey, s.hostTokenHash, s.guestTokenHash, s.programTokenHash, s.guestTokenEnc, s.settings, s.createdAt],
+        `INSERT INTO studios (id,name,match_key,host_token_hash,guest_token_hash,program_token_hash,guest_token_enc,settings,created_at,want_live)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+        [s.id, s.name, s.matchKey, s.hostTokenHash, s.guestTokenHash, s.programTokenHash, s.guestTokenEnc, s.settings, s.createdAt, wantsLive(s.settings)],
       );
     },
     async getStudio(id) {
@@ -160,13 +209,11 @@ export async function createPgRepo(url: string): Promise<Repo> {
       return r ? studioFromRow(r) : null;
     },
     async listLiveStudios() {
-      return (await pool.query(`SELECT id FROM studios WHERE settings LIKE '%"wantLive":true%'`)).rows.map((r: any) => String(r.id));
+      return (await pool.query(LIVE_SQL)).rows.map((r: any) => String(r.id));
     },
     async updateStudio(id, patch) {
-      const cur = await one('SELECT * FROM studios WHERE id = $1', [id]);
-      if (!cur) return;
-      const s = { ...studioFromRow(cur), ...patch };
-      await pool.query('UPDATE studios SET name=$1, match_key=$2, settings=$3 WHERE id=$4', [s.name, s.matchKey, s.settings, id]);
+      const { sql, args } = setClause(patch, STUDIO_COLS, ph);
+      if (sql) await pool.query(`UPDATE studios SET ${sql} WHERE id=$${args.length + 1}`, [...args, id]);
     },
     async listDestinations(studioId) {
       return (await pool.query('SELECT * FROM destinations WHERE studio_id = $1 ORDER BY created_at', [studioId])).rows.map(destFromRow);
@@ -178,10 +225,8 @@ export async function createPgRepo(url: string): Promise<Repo> {
       );
     },
     async updateDestination(id, studioId, patch) {
-      const cur = await one('SELECT * FROM destinations WHERE id = $1 AND studio_id = $2', [id, studioId]);
-      if (!cur) return;
-      const d = { ...destFromRow(cur), ...patch };
-      await pool.query('UPDATE destinations SET name=$1, url=$2, key_enc=$3, enabled=$4 WHERE id=$5', [d.name, d.url, d.keyEnc, d.enabled ? 1 : 0, id]);
+      const { sql, args } = setClause(patch, DEST_COLS, ph);
+      if (sql) await pool.query(`UPDATE destinations SET ${sql} WHERE id=$${args.length + 1} AND studio_id=$${args.length + 2}`, [...args, id, studioId]);
     },
     async deleteDestination(id, studioId) {
       await pool.query('DELETE FROM destinations WHERE id = $1 AND studio_id = $2', [id, studioId]);

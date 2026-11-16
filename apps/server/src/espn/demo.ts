@@ -6,25 +6,38 @@ import { config } from '../config';
 
 export const DEMO_KEY = 'demo:replay';
 
+/** The recording never changes: read and parse it once per process, not once per replay instance. */
+let recording: { summary: any; balls: Ball[] } | null = null;
+function loadRecording() {
+  if (recording) return recording;
+  const summary = JSON.parse(readFileSync(resolve(config.demoDir, 'summary.json'), 'utf8'));
+  const balls: Ball[] = [];
+  for (let p = 1; p <= 8; p++) {
+    try {
+      balls.push(...normalizeBalls(JSON.parse(readFileSync(resolve(config.demoDir, `pbp${p}.json`), 'utf8'))));
+    } catch {
+      /* optional page */
+    }
+  }
+  balls.sort((a, b) => a.seq - b.seq);
+  return (recording = { summary, balls });
+}
+
 /**
  * Replays a recorded real match (IND v WI T20I) ball by ball so the whole studio —
  * scenes, automation, sfx — can be exercised when no live match is on.
  */
 export class DemoReplay {
   private summary: any;
-  private all: Ball[] = [];
+  private all: readonly Ball[];
   cursor = 0;
+  /** detail() rebuilds every innings from the balls; it only changes when the cursor moves */
+  private cached: { cursor: number; detail: MatchDetail } | null = null;
 
   constructor(startAt = 70) {
-    this.summary = JSON.parse(readFileSync(resolve(config.demoDir, 'summary.json'), 'utf8'));
-    for (let p = 1; p <= 8; p++) {
-      try {
-        this.all.push(...normalizeBalls(JSON.parse(readFileSync(resolve(config.demoDir, `pbp${p}.json`), 'utf8'))));
-      } catch {
-        /* optional page */
-      }
-    }
-    this.all.sort((a, b) => a.seq - b.seq);
+    const rec = loadRecording();
+    this.summary = rec.summary;
+    this.all = rec.balls;
     this.cursor = Math.min(startAt, this.all.length);
   }
 
@@ -63,6 +76,11 @@ export class DemoReplay {
   }
 
   detail(): MatchDetail {
+    if (this.cached?.cursor !== this.cursor) this.cached = { cursor: this.cursor, detail: this.build() };
+    return { ...this.cached.detail, lastUpdated: Date.now() };
+  }
+
+  private build(): MatchDetail {
     const balls = this.balls();
     const base = buildMatchDetail({ leagueId: 'demo', eventId: 'replay', summary: this.summary, balls });
     const last = balls.at(-1);

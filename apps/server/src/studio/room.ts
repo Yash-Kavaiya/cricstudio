@@ -1,4 +1,5 @@
-import { appendFileSync, existsSync, mkdirSync, renameSync, statSync } from 'node:fs';
+import { existsSync } from 'node:fs';
+import { appendFile, mkdir, rename, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import type { Server } from 'socket.io';
 import { BACKGROUNDS, EDGE_LANG_VOICES, GNANI_VOICES, type LiveStatus, type AiCommentaryStatus, type ChatMessage, type CommentaryLine, type CricketEvent, type MatchDetail, type MatchListItem, type Participant, type StudioState, type SttProvider, type Suggestion } from '@cricstudio/shared';
@@ -443,7 +444,7 @@ export class StudioRoom {
         this.streamLog(`status ${s.state}${s.error ? ` · ${s.error}` : ''} · fps=${s.fps ?? '-'} speed=${s.speed ?? '-'} · ${s.destinations.map((d) => `${d.name}=${d.state}${d.error ? ` (${d.error})` : ''}`).join(', ')}`);
       }
       this.state.live = { ...s, mode: 'mesh', broadcaster: this.state.live.broadcaster ?? broadcaster };
-      this.commit();
+      this.commit({ persist: false }); // ~every 2 s while live; live status is never persisted
     });
     p.on('needRestart', () => {
       const id = this.producerSocket();
@@ -569,14 +570,41 @@ export class StudioRoom {
 
   /** Append to data/logs/stream-<id>.log (kept small) so a stopped stream can always be diagnosed later. */
   streamLog(line: string) {
+    // buffered + async: this event loop also carries the live video chunks, so it must never block on disk
+    this.logBuf.push(`${new Date().toISOString()} ${line}\n`);
+    if (this.logBuf.length > 500) this.logBuf.splice(0, this.logBuf.length - 500); // disk stalled: keep the newest
+    if (!this.logFlushing) void this.flushLog();
+  }
+
+  private logBuf: string[] = [];
+  private logFlushing = false;
+  private logWrites = 0;
+
+  private async flushLog() {
+    this.logFlushing = true;
+    const dir = resolve(config.dataDir, 'logs');
+    const file = resolve(dir, `stream-${this.state.id}.log`);
     try {
-      const dir = resolve(config.dataDir, 'logs');
-      if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-      const file = resolve(dir, `stream-${this.state.id}.log`);
-      if (existsSync(file) && statSync(file).size > 2_000_000) renameSync(file, `${file}.1`);
-      appendFileSync(file, `${new Date().toISOString()} ${line}\n`);
-    } catch {
-      /* logging must never break streaming */
+      while (this.logBuf.length) {
+        const chunk = this.logBuf.join('');
+        this.logBuf = [];
+        try {
+          // directory + rotation check every ~50 writes, not on every line
+          if (this.logWrites++ % 50 === 0) {
+            await mkdir(dir, { recursive: true });
+            const size = await stat(file).then(
+              (st) => st.size,
+              () => 0,
+            );
+            if (size > 2_000_000) await rename(file, `${file}.1`);
+          }
+          await appendFile(file, chunk);
+        } catch {
+          /* logging must never break streaming */
+        }
+      }
+    } finally {
+      this.logFlushing = false;
     }
   }
 
@@ -591,8 +619,11 @@ export class StudioRoom {
 
   /* ---------------- state sync ---------------- */
 
-  /** Coalesce state broadcasts to one per tick. */
-  commit() {
+  /**
+   * Coalesce state broadcasts to one per tick. Saving is debounced (1.5 s) but never waits more
+   * than 10 s, so a steady stream of changes can't postpone it forever.
+   */
+  commit(opts: { persist?: boolean } = {}) {
     if (!this.emitQueued) {
       this.emitQueued = true;
       queueMicrotask(() => {
@@ -600,9 +631,17 @@ export class StudioRoom {
         this.io.to(this.roomName).emit('studio:state', this.state);
       });
     }
+    if (opts.persist === false) return;
+    const now = Date.now();
+    this.persistDueBy ||= now + 10_000;
     if (this.persistTimer) clearTimeout(this.persistTimer);
-    this.persistTimer = setTimeout(() => void this.persist(), 1500);
+    this.persistTimer = setTimeout(() => void this.persist(), Math.max(0, Math.min(1500, this.persistDueBy - now)));
   }
+
+  private persistDueBy = 0;
+  /** last values written, so an unchanged studio never costs a database write */
+  private savedSettings: string | null = null;
+  private savedName: string | null = null;
 
   /* ---------------- speech-to-text (live captions) ---------------- */
 
@@ -668,8 +707,20 @@ export class StudioRoom {
   }
 
   async persist() {
+    if (this.persistTimer) clearTimeout(this.persistTimer);
+    this.persistTimer = null;
+    this.persistDueBy = 0;
     const settings = JSON.stringify({ ...Object.fromEntries(PERSISTED.map((k) => [k, this.state[k]])), sttKeys: this.sttKeys });
-    await this.repo.updateStudio(this.state.id, { settings, name: this.state.name });
+    const name = this.state.name;
+    if (settings === this.savedSettings && name === this.savedName) return;
+    this.savedSettings = settings;
+    this.savedName = name;
+    try {
+      await this.repo.updateStudio(this.state.id, { settings, name });
+    } catch (e) {
+      this.savedSettings = this.savedName = null; // force a retry on the next save
+      console.warn(`[studio] persist ${this.state.id} failed:`, (e as Error).message);
+    }
   }
 
   suggest(s: Suggestion) {

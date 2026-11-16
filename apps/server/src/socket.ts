@@ -44,6 +44,23 @@ const clampNum = (v: unknown, lo: number, hi: number, d: number) => {
   return Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : d;
 };
 
+/**
+ * Per-socket token bucket: `burst` events at once, refilling at `perSec`. Each event below
+ * fans out to the whole room, so one misbehaving client must not be able to flood everyone.
+ */
+export function rateLimiter(perSec: number, burst: number, now: () => number = Date.now) {
+  let tokens = burst;
+  let last = now();
+  return () => {
+    const t = now();
+    tokens = Math.min(burst, tokens + ((t - last) / 1000) * perSec);
+    last = t;
+    if (tokens < 1) return false;
+    tokens -= 1;
+    return true;
+  };
+}
+
 function sanitizeAutopilot(cur: AutopilotSettings, p: Partial<AutopilotSettings>): AutopilotSettings {
   return {
     enabled: typeof p.enabled === 'boolean' ? p.enabled : cur.enabled,
@@ -67,6 +84,9 @@ function sanitizeAutopilot(cur: AutopilotSettings, p: Partial<AutopilotSettings>
 export function registerSocket(io: Server, studios: StudioManager, hub: MatchHub, livekit: LiveKitService) {
   io.on('connection', (socket: Socket) => {
     const data = socket.data as SocketData;
+    const chatLimit = rateLimiter(1, 5);
+    const updateLimit = rateLimiter(10, 20); // participant toggles + bubble drags
+    const ttsLimit = rateLimiter(2, 6);
 
     const room = (): StudioRoom | undefined => (data.studioId ? studios.get(data.studioId) : undefined);
     const self = (): Participant | undefined => room()?.state.participants.find((p) => p.id === socket.id);
@@ -271,6 +291,7 @@ export function registerSocket(io: Server, studios: StudioManager, hub: MatchHub
     socket.on('studio:bubble', (body: { participantId?: string; patch?: BubblePatch }, ack: Ack = noop) => {
       const r = room();
       if (!r) return ack({ ok: false });
+      if (!updateLimit()) return ack({ ok: false, error: 'Too many updates — slow down' });
       const me = self();
       const id = String(body?.participantId ?? '');
       if (!me || !canEditBubble(me.role, me.id, id)) return ack({ ok: false, error: 'You can only move your own frame' });
@@ -359,7 +380,7 @@ export function registerSocket(io: Server, studios: StudioManager, hub: MatchHub
     socket.on('participant:update', (patch: Partial<Pick<Participant, 'muted' | 'camOff' | 'screenSharing' | 'name'>>) => {
       const r = room();
       const p = self();
-      if (!r || !p) return;
+      if (!r || !p || !updateLimit()) return;
       if (typeof patch.muted === 'boolean') p.muted = patch.muted;
       if (typeof patch.camOff === 'boolean') p.camOff = patch.camOff;
       if (typeof patch.screenSharing === 'boolean') p.screenSharing = patch.screenSharing;
@@ -377,7 +398,7 @@ export function registerSocket(io: Server, studios: StudioManager, hub: MatchHub
 
     socket.on('chat:send', ({ text }: { text: string }) => {
       const r = room();
-      if (!r || !text?.trim() || data.role === 'program') return;
+      if (!r || typeof text !== 'string' || !text.trim() || data.role === 'program' || !chatLimit()) return;
       const msg: ChatMessage = {
         id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
         from: data.name ?? 'Anon',
@@ -424,7 +445,7 @@ export function registerSocket(io: Server, studios: StudioManager, hub: MatchHub
     // Gnani voice for a commentary line (only lines this room actually spoke)
     socket.on('commentary:tts', async ({ id }: { id: string }, ack: Ack = noop) => {
       const r = room();
-      if (!r || typeof id !== 'string') return ack({ ok: false });
+      if (!r || typeof id !== 'string' || !ttsLimit()) return ack({ ok: false });
       const audio = await r.ttsLine(id);
       ack(audio ? { ok: true, audio } : { ok: false });
     });
