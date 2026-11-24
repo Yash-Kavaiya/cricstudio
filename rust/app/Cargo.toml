@@ -1,0 +1,41 @@
+[package]
+name = "cricstudio"
+description = "CricStudio server: live cricket broadcast studio backend in Rust"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "cricstudio"
+path = "src/main.rs"
+
+[dependencies]
+cricstudio-engine = { path = "../engine" }
+aes-gcm = "0.10"
+anyhow = "1"
+axum = { version = "0.8", features = ["multipart", "ws"] }
+base64 = "0.22"
+bytes = { version = "1", features = ["serde"] }
+chrono.workspace = true
+dotenvy = "0.15"
+futures-util = "0.3"
+hmac = "0.12"
+rand = "0.8"
+regex.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["http2", "json", "multipart", "rustls-tls"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
+scrypt = { version = "0.11", default-features = false }
+serde.workspace = true
+serde_json.workspace = true
+sha1 = "0.10"
+sha2 = "0.10"
+socketioxide = { version = "0.18", features = ["state", "extensions"] }
+subtle = "2"
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "fs"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+urlencoding = "2"
+uuid = { version = "1", features = ["v4"] }

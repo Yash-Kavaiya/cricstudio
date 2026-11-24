@@ -1,0 +1,16 @@
+[package]
+name = "cricstudio-engine"
+description = "Cricket data engine for CricStudio: ESPN normalisation, event detection, demo replay"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+chrono.workspace = true
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+base64 = "0.22"
+sha2 = "0.10"
